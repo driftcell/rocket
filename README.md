@@ -5,7 +5,7 @@
 A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
-- Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`, `spiget`; resolvers: `auto`, `direct`, `github_release`);
+- Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`, `spiget`, `zrips`; resolvers: `auto`, `direct`, `github_release`);
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
 - Finds plugins on Hangar, Modrinth and Spiget (SpigotMC) by keyword (`rocket search`), one ranked
   list with cmd+clickable project links on a TTY;
@@ -97,10 +97,10 @@ version = "5.12.1"
 Every selected plugin is then resolved to the newest version the download pipeline can use
 exactly: Hangar Release-channel versions that declare the chosen Minecraft version (including
 external links to GitHub Release tag pages, with the right attachment selected), Modrinth release
-versions listing it with a paper-family loader, and GitHub releases with a matching JAR
-attachment — GitHub provides no Minecraft compatibility metadata, so the newest usable release is
-used as-is. Plugins that cannot be resolved are reported as skipped and left out; the file is
-still written.
+versions listing it with a paper-family loader, GitHub releases with a matching JAR
+attachment, and the newest entry of a zrips.net download page — GitHub and zrips.net provide no
+Minecraft compatibility metadata, so the newest usable release is used as-is. Plugins that
+cannot be resolved are reported as skipped and left out; the file is still written.
 
 ```bash
 uv run python -m rocket init                       # writes ./server.toml
@@ -139,12 +139,13 @@ needed to try a plugin:
 ```bash
 rocket add modrinth:luckperms            # resolve and pin the newest usable version
 rocket add hangar:ViaVersion/ViaVersion --version 5.12.1   # pin an exact version
-rocket add github:Zrips/Residence --id residence
+rocket add zrips:Residence               # Zrips plugins from zrips.net
 rocket remove luckperms
 ```
 
-- The spec is `<provider>:<project>`: a Modrinth slug, `owner/name` for Hangar and GitHub, or the
-  numeric Spigot resource id for Spiget (e.g. `spiget:28140`, from the resource URL).
+- The spec is `<provider>:<project>`: a Modrinth slug, `owner/name` for Hangar and GitHub, the
+  numeric Spigot resource id for Spiget (e.g. `spiget:28140`, from the resource URL), or the
+  case-sensitive directory name of the download page for Zrips (e.g. `zrips:Residence`).
 - Without `--version`, the newest version the download pipeline can use exactly is resolved for the
   configured `paper.version` and pinned (the same rules `rocket init` applies). With `--version`,
   the exact version is verified against the provider before anything is written, so a typo fails
@@ -214,9 +215,10 @@ rocket pin luckperms    # exact version of one plugin → file, when ambiguous
   version in it, then the build — "always the newest STABLE build (unpinned)" or a specific
   pinned build id.
 - **Plugins** list every version usable with the configured Minecraft version (all Hangar
-  channels, Modrinth release/beta/alpha, GitHub release tags, and Spiget versions labeled with
-  their release date — an explicit pick, so no "newest" heuristics anywhere). When the chosen
-  version ships several JARs, a second prompt selects the file.
+  channels, Modrinth release/beta/alpha, GitHub release tags, Spiget versions labeled with
+  their release date, and zrips.net listings labeled with their upload date — an explicit pick,
+  so no "newest" heuristics anywhere). When the chosen version ships several JARs, a second
+  prompt selects the file.
 - Selecting what is already pinned prints `nothing to change`. Otherwise the same per-item
   atomicity as `rocket upgrade` applies: the pin is written first, and a failed download rolls
   it back. The command is interactive-only; off a terminal it refuses to run (pin by hand and
@@ -259,9 +261,9 @@ uv run --project rocket python -m rocket download --config server.toml
 | `plugin_defaults.platform` | default `PAPER`; this version only supports `PAPER` |
 | `plugin_defaults.follow_external` | boolean, default `true` |
 | `plugins.<id>` | locally unique plugin id: lowercase letters, digits, underscores, hyphens |
-| `plugins.<id>.provider` | required, `hangar`, `github`, `modrinth` or `spiget` |
-| `plugins.<id>.project` | required coordinates (interpreted by the provider): `owner/name` for Hangar/GitHub, a slug for Modrinth, the numeric Spigot resource id for Spiget |
-| `plugins.<id>.version` | required non-empty string; the version name for Hangar/Spiget, an exact tag for GitHub, the `version_number` for Modrinth |
+| `plugins.<id>.provider` | required, `hangar`, `github`, `modrinth`, `spiget` or `zrips` |
+| `plugins.<id>.project` | required coordinates (interpreted by the provider): `owner/name` for Hangar/GitHub, a slug for Modrinth, the numeric Spigot resource id for Spiget, the case-sensitive download-page directory name for Zrips (e.g. `Residence`) |
+| `plugins.<id>.version` | required non-empty string; the version name for Hangar/Spiget, an exact tag for GitHub, the `version_number` for Modrinth, the exact version in the upstream filename for Zrips |
 | `plugins.<id>.asset` | optional, full filename of the upstream artifact, exact match (not the local output filename); not available for `spiget`, whose downloads are unnamed |
 | `plugins.<id>.resolver` | optional, default `auto`; may be explicitly set to `direct` or `github_release` |
 | `plugins.<id>.platform` / `.follow_external` | override the corresponding defaults |
@@ -328,6 +330,7 @@ stdout is a TTY; set `NO_COLOR` to disable colors. Example resolution chains:
 - `github → github-release → github-asset`: native GitHub provider
 - `modrinth`: direct link to a Modrinth official file (SHA-512 verification)
 - `spiget`: direct link to the Spiget version-download endpoint (no upstream hash)
+- `zrips`: direct link published on the zrips.net download page (no upstream hash)
 
 ## Exit codes
 
@@ -414,7 +417,7 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 ## Known limitations
 
 - Only the implemented resolution kinds are supported (`hangar` / `github` / `modrinth` /
-  `spiget`), and resolving arbitrary websites is not promised; Patreon-style authorization pages
+  `spiget` / `zrips`), and resolving arbitrary websites is not promised; Patreon-style authorization pages
   and GitHub CE Releases without attachments fail with an explicit error, and no JAR URL is
   fabricated. Premium and externally hosted Spigot resources are rejected the same way.
 - CoreProtect CE is fetched via the Modrinth provider: its official GitHub CE Release has no attachments
@@ -450,11 +453,12 @@ src/rocket/
   config.py       server.toml parsing and strict validation
   config_edit.py  add/remove/upgrade: textual [plugins.<id>] section and version-pin edits with round-trip checks
   models.py       shared models (entry/Release/Artifact/result)
-  providers.py    the provider trait + Fill (Paper), Hangar, GitHub, Modrinth, Spiget implementations
+  providers.py    the provider trait + Fill (Paper), Hangar, GitHub, Modrinth, Spiget, Zrips implementations
   resolvers.py    Direct / GitHubRelease resolvers and auto selection
   github.py       GitHub Release client, attachment selection, URL classification
   modrinth.py     Modrinth API client, version/file selection
   spiget.py       Spiget API client (SpigotMC), resource/version selection
+  zrips.py        zrips.net download-page parsing, version selection
   http_client.py  synchronous HTTP client built on httpx + tenacity
   downloader.py   streaming download, validation and atomic replace
   lockfile.py     rocket.lock reading/writing, entry validation and matching support

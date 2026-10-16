@@ -602,7 +602,11 @@ def test_default_catalog_matches_the_reference_config() -> None:
     assert by_id["essentialsx"].project == "EssentialsX/Essentials"
     assert by_id["essentialsx_chat"].assets == ("EssentialsXChat-{version}.jar",)
     assert by_id["coreprotect"].provider == "modrinth"
-    assert by_id["residence"].assets == ("Residence{version}.jar",)
-    assert by_id["cmilib"].assets == ("CMILib{version}.jar",)
+    assert by_id["residence"].provider == "zrips"
+    assert by_id["residence"].project == "Residence"
+    assert by_id["residence"].assets == ()
+    assert by_id["cmilib"].provider == "zrips"
+    assert by_id["cmilib"].project == "CMILib"
+    assert by_id["cmilib"].assets == ()
     assert by_id["tab"].assets == ("TAB.v{version}.jar",)
     assert by_id["vault"].assets == ("Vault.jar",)

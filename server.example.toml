@@ -67,3 +67,13 @@ asset = "EssentialsXChat-2.22.0.jar"
 # provider = "spiget"
 # project = "28140"
 # version = "5.5.71"
+
+# zrips.net example (Zrips plugins such as Residence and CMILib): the project is the
+# case-sensitive directory name of the download page (https://www.zrips.net/Residence/).
+# Each version ships a single JAR named <project><version>.jar, so no asset is pinned;
+# zrips.net provides no upstream hash and no Minecraft compatibility info (a warning is
+# printed and the file is re-downloaded and re-validated on every run).
+# [plugins.residence]
+# provider = "zrips"
+# project = "Residence"
+# version = "6.0.4.1"

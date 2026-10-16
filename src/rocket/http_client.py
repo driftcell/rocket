@@ -101,6 +101,14 @@ class HTTPClient:
         finally:
             response.close()
 
+    def get_text(self, url: str) -> str:
+        """GET and read a text page (HTML listings); raise on non-200."""
+        response = self._retryer(self._get_once, url, accept="text/html, */*", stream=False)
+        try:
+            return response.text
+        finally:
+            response.close()
+
     @contextmanager
     def stream(self, url: str) -> Generator[httpx.Response]:
         """GET and stream a 200 response; the caller iterates and this method closes it."""

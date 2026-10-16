@@ -1,4 +1,4 @@
-"""Providers: Fill (Paper), Hangar, GitHub, Modrinth, Spiget.
+"""Providers: Fill (Paper), Hangar, GitHub, Modrinth, Spiget, Zrips.
 
 Scope: query the declared project and exact version; return download entries and metadata;
 never treat an arbitrary web page as a JAR and never select other versions.
@@ -59,6 +59,9 @@ from .spiget import (
 from .spiget import (
     select_version as select_spiget_version,
 )
+from .zrips import fetch_listing
+from .zrips import parse_project as parse_zrips_project
+from .zrips import select_file as select_zrips_file
 
 _FILL_BASE = "https://fill.papermc.io/v3"
 _HANGAR_BASE = "https://hangar.papermc.io/api/v1"
@@ -67,6 +70,7 @@ _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _HANGAR_VERSION_LIMIT = 10
 _PIN_CATALOG_LIMIT = 30  # select prompts stay navigable
 _GITHUB_NOTE = "GitHub Releases provide no Minecraft compatibility info (treated as unknown)"
+_ZRIPS_NOTE = "zrips.net provides no Minecraft compatibility info (treated as unknown)"
 
 
 class PluginProvider:
@@ -1098,11 +1102,86 @@ class SpigetProvider(PluginProvider):
         return resource
 
 
+class ZripsProvider(PluginProvider):
+    """zrips.net download pages (exact version as spelled in the upstream filename)."""
+
+    name = "zrips"
+
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        return parse_zrips_project(project, field_path=field_path)
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
+        project = parse_zrips_project(spec.project, field_path=f"plugins.{spec.id}.project")
+        files = fetch_listing(self.context.http, project)
+        file = select_zrips_file(files, version=spec.version, project=project)
+        note = _ZRIPS_NOTE
+        self.context.log.warning("[%s] warning: %s", spec.id, note)
+        self.context.log.info(
+            "[%s] selected zrips.net version %s, file %s", spec.id, file.version, file.filename
+        )
+        entry = DownloadEntry(
+            kind=EntryKind.DIRECT,
+            url=file.url,
+            origin=self.name,
+            filename=file.filename,
+        )
+        return ReleaseInfo(
+            artifact_id=spec.id,
+            kind=ArtifactKind.PLUGIN,
+            provider=self.name,
+            project=spec.project,
+            version=spec.version,
+            entry=entry,
+            asset=spec.asset,
+            platform=spec.platform,
+            compatibility=Compatibility.UNKNOWN,
+            compatibility_note=note,
+            source_chain=("zrips",),
+        )
+
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        """The newest listing entry (the pages are published newest first)."""
+        project = parse_zrips_project(project, field_path="project")
+        newest = fetch_listing(self.context.http, project)[0]
+        if templates:
+            wanted = [template.replace("{version}", newest.version) for template in templates]
+            if newest.filename not in wanted:
+                raise ProviderError(
+                    f"asset does not match the zrips.net filename {newest.filename!r} "
+                    f"for {project} {newest.version}"
+                )
+        return RecommendedPlugin(
+            id=plugin_id,
+            provider=self.name,
+            project=project,
+            version=newest.version,
+            note=_ZRIPS_NOTE,
+        )
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """(version, upload date or note), newest first; no compatibility info exists."""
+        project = parse_zrips_project(project, field_path="project")
+        files = fetch_listing(self.context.http, project)
+        return [(file.version, file.detail) for file in files[:_PIN_CATALOG_LIMIT]]
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        return None, []  # each version ships a single JAR; no asset is pinned
+
+
 PROVIDERS: dict[str, type[PluginProvider]] = {
     HangarProvider.name: HangarProvider,
     GitHubProvider.name: GitHubProvider,
     ModrinthProvider.name: ModrinthProvider,
     SpigetProvider.name: SpigetProvider,
+    ZripsProvider.name: ZripsProvider,
 }
 
 
