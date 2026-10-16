@@ -62,6 +62,14 @@ class PluginConfig:
 
 
 @dataclass(frozen=True)
+class PluginDefaultsConfig:
+    """[plugin_defaults] section."""
+
+    platform: str = "PAPER"
+    follow_external: bool = True
+
+
+@dataclass(frozen=True)
 class Config:
     """Parsed result of the whole server.toml."""
 
@@ -70,6 +78,7 @@ class Config:
     paper: PaperConfig
     http: HttpConfig
     download: DownloadConfig
+    plugin_defaults: PluginDefaultsConfig
     plugins: tuple[PluginConfig, ...]
     warnings: tuple[str, ...] = ()
 
@@ -118,11 +127,11 @@ def parse_config(raw: dict[str, Any], *, path: Path) -> Config:
     http = _parse_http(_require_table(raw["http"], "http"))
 
     download = _parse_download(raw.get("download"), config_path=path)
-    platform_default, follow_default = _parse_plugin_defaults(raw.get("plugin_defaults"))
+    plugin_defaults = _parse_plugin_defaults(raw.get("plugin_defaults"))
     plugins = _parse_plugins(
         raw.get("plugins"),
-        platform_default=platform_default,
-        follow_default=follow_default,
+        platform_default=plugin_defaults.platform,
+        follow_default=plugin_defaults.follow_external,
     )
 
     warnings: list[str] = []
@@ -140,6 +149,7 @@ def parse_config(raw: dict[str, Any], *, path: Path) -> Config:
         paper=paper,
         http=http,
         download=download,
+        plugin_defaults=plugin_defaults,
         plugins=plugins,
         warnings=tuple(warnings),
     )
@@ -148,6 +158,11 @@ def parse_config(raw: dict[str, Any], *, path: Path) -> Config:
 # ---------------------------------------------------------------------------
 # Section parsers
 # ---------------------------------------------------------------------------
+
+
+def is_valid_plugin_id(value: str) -> bool:
+    """Whether a plugin id is usable in [plugins.<id>] (lowercase letters, digits, _ and -)."""
+    return _PLUGIN_ID_RE.fullmatch(value) is not None
 
 
 def _parse_schema_version(raw: dict[str, Any]) -> int:
@@ -233,9 +248,9 @@ def _parse_download(value: Any, *, config_path: Path) -> DownloadConfig:
     return DownloadConfig(output_dir=output_dir.resolve())
 
 
-def _parse_plugin_defaults(value: Any) -> tuple[str, bool]:
+def _parse_plugin_defaults(value: Any) -> PluginDefaultsConfig:
     if value is None:
-        return "PAPER", True
+        return PluginDefaultsConfig()
     table = _require_table(value, "plugin_defaults")
     _check_unknown_keys(table, {"platform", "follow_external"}, "plugin_defaults")
     platform = _optional_string(table, "platform", "plugin_defaults") or "PAPER"
@@ -244,7 +259,7 @@ def _parse_plugin_defaults(value: Any) -> tuple[str, bool]:
             f"plugin_defaults.platform only supports PAPER, got {platform!r}",
         )
     follow_external = _optional_bool(table, "follow_external", "plugin_defaults", default=True)
-    return platform, follow_external
+    return PluginDefaultsConfig(platform=platform, follow_external=follow_external)
 
 
 def _parse_plugins(
