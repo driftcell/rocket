@@ -216,6 +216,12 @@ def fetch_paper_versions(http: HTTPClient) -> dict[str, list[str]]:
 
 def fetch_newest_stable_build(http: HTTPClient, version: str) -> int | None:
     """The highest STABLE build id for an exact Paper release; None when there is none."""
+    ids = fetch_stable_build_ids(http, version)
+    return ids[0] if ids else None
+
+
+def fetch_stable_build_ids(http: HTTPClient, version: str) -> list[int]:
+    """All STABLE build ids for an exact Paper release, highest first."""
     url = f"{_FILL_BASE}/projects/paper/versions/{quote(version, safe='')}/builds"
     payload = http.get_json(url)
     _raise_on_api_error(payload, context=f"build list for version {version}")
@@ -235,7 +241,7 @@ def fetch_newest_stable_build(http: HTTPClient, version: str) -> int | None:
         and not isinstance(item.get("id"), bool)
         and item.get("channel") == "STABLE"
     ]
-    return max(stable_ids) if stable_ids else None
+    return sorted(stable_ids, reverse=True)
 
 
 class HangarProvider(PluginProvider):

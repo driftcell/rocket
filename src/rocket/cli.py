@@ -36,6 +36,7 @@ from .errors import (
     EXIT_OK,
     ExternalNotFollowedError,
     LockError,
+    ProviderError,
     RocketError,
 )
 from .github import GitHubClient, parse_project
@@ -57,9 +58,19 @@ from .providers import (
     FillPaperProvider,
     fetch_newest_stable_build,
     fetch_paper_versions,
+    fetch_stable_build_ids,
     search_hangar_projects,
 )
-from .recommend import asset_template, recommend_plugin
+from .recommend import (
+    asset_template,
+    github_release_file_choices,
+    hangar_version_file_choices,
+    list_github_releases,
+    list_hangar_versions,
+    list_modrinth_versions,
+    modrinth_version_file_choices,
+    recommend_plugin,
+)
 from .resolvers import select_resolver
 from .wizard import Prompter, QuestionaryPrompter, run_init
 
@@ -202,6 +213,21 @@ def main(
         help="apply every available update without prompting "
         "(core jumps to the newest Minecraft line)",
     )
+    pin_parser = subparsers.add_parser(
+        "pin",
+        help="Interactively pin core or a plugin to an exact version, then download",
+    )
+    pin_parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="what to pin: 'core' or a plugin id (default: ask)",
+    )
+    pin_parser.add_argument(
+        "--config",
+        default="server.toml",
+        help="path to the config file (default: ./server.toml)",
+    )
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(
@@ -229,6 +255,14 @@ def main(
         return run_upgrade(
             args.target,
             force=args.force,
+            config_path=Path(args.config),
+            transport=transport,
+            sleep=sleep,
+            prompter=prompter,
+        )
+    if args.command == "pin":
+        return run_pin(
+            args.target,
             config_path=Path(args.config),
             transport=transport,
             sleep=sleep,
@@ -942,33 +976,20 @@ def _run_upgrade(
             print("everything is up to date")
         return EXIT_FAILURE if check_failed else EXIT_OK
 
-    if paper_pin is not None or plugin_pins:
-        update_version_pins(config_path, paper=paper_pin, plugins=plugin_pins)
-    exit_code, failed_ids = _run_download(
+    original_plugins = {
+        update.plugin.id: PluginPin(version=update.plugin.version, asset=update.plugin.asset)
+        for update in updates
+    }
+    exit_code, failed_ids = _apply_pins_and_download(
         config_path,
+        paper=paper_pin,
+        plugins=plugin_pins,
+        refresh=refresh,
+        original_paper=original_paper_pin,
+        original_plugins=original_plugins,
         transport=transport,
         sleep=sleep,
-        verbose=False,
-        upgrade=False,
-        refresh=refresh,
     )
-
-    rolled_back = 0
-    if failed_ids:
-        rollback_paper = (
-            original_paper_pin if paper_pin is not None and "paper" in failed_ids else None
-        )
-        originals = {
-            update.plugin.id: PluginPin(version=update.plugin.version, asset=update.plugin.asset)
-            for update in updates
-        }
-        rollback_plugins = {
-            plugin_id: originals[plugin_id] for plugin_id in failed_ids if plugin_id in originals
-        }
-        if rollback_paper is not None or rollback_plugins:
-            update_version_pins(config_path, paper=rollback_paper, plugins=rollback_plugins)
-            rolled_back = len(rollback_plugins) + (1 if rollback_paper is not None else 0)
-            print(f"rolled back {_plural(rolled_back, 'pin')} to the previous version")
 
     core_moved = target == "core" and new_mc is not None and "paper" not in failed_ids
     if core_moved:
@@ -977,6 +998,46 @@ def _run_upgrade(
             f"with Minecraft {new_mc}"
         )
     return EXIT_FAILURE if check_failed or exit_code != EXIT_OK else EXIT_OK
+
+
+def _apply_pins_and_download(
+    config_path: Path,
+    *,
+    paper: PaperPin | None,
+    plugins: dict[str, PluginPin],
+    refresh: frozenset[str],
+    original_paper: PaperPin | None,
+    original_plugins: dict[str, PluginPin],
+    transport: httpx.BaseTransport | None,
+    sleep: Callable[[float], None],
+) -> tuple[int, tuple[str, ...]]:
+    """Rewrite the pins, run the download, and roll failed pins back to the originals.
+
+    ``original_paper``/``original_plugins`` describe the pre-edit state of the bumped
+    items only; a bumped item that fails its download is restored. Returns the download
+    exit code and the failed item ids.
+    """
+    if paper is not None or plugins:
+        update_version_pins(config_path, paper=paper, plugins=plugins)
+    exit_code, failed_ids = _run_download(
+        config_path,
+        transport=transport,
+        sleep=sleep,
+        verbose=False,
+        upgrade=False,
+        refresh=refresh,
+    )
+    rollback_paper = original_paper if "paper" in failed_ids else None
+    rollback_plugins = {
+        plugin_id: original_plugins[plugin_id]
+        for plugin_id in failed_ids
+        if plugin_id in original_plugins
+    }
+    if rollback_paper is not None or rollback_plugins:
+        update_version_pins(config_path, paper=rollback_paper, plugins=rollback_plugins)
+        rolled = len(rollback_plugins) + (1 if rollback_paper is not None else 0)
+        print(f"rolled back {_plural(rolled, 'pin')} to the previous version")
+    return exit_code, failed_ids
 
 
 def _core_candidates(config: Config, *, http: HTTPClient) -> _CoreCandidates:
@@ -1108,6 +1169,236 @@ def _update_title(update: _PluginUpdate) -> str:
     if update.note:
         title += f" — {update.note}"
     return title
+
+
+# ---------------------------------------------------------------------------
+# rocket pin
+# ---------------------------------------------------------------------------
+
+_PIN_AUTO_BUILD = "__auto__"
+
+
+def run_pin(
+    target: str | None,
+    *,
+    config_path: Path,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    prompter: Prompter | None = None,
+) -> int:
+    """Interactively pin core or one plugin to an exact version, then download.
+
+    Returns 0 when the pin applied (or nothing needed changing), 1 on failures, 2 on
+    invalid config. ``transport``/``sleep``/``prompter`` are only for test injection.
+    """
+    handler = install_logging()
+    try:
+        return _run_pin(
+            target, config_path=config_path, transport=transport, sleep=sleep, prompter=prompter
+        )
+    finally:
+        remove_logging(handler)
+
+
+def _run_pin(
+    target: str | None,
+    *,
+    config_path: Path,
+    transport: httpx.BaseTransport | None,
+    sleep: Callable[[float], None],
+    prompter: Prompter | None,
+) -> int:
+    try:
+        config = load_config(config_path)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    for warning in config.warnings:
+        _log.warning("config warning: %s", warning)
+
+    plugin: PluginConfig | None = None
+    if target is not None and target != "core":
+        plugin = next((item for item in config.plugins if item.id == target), None)
+        if plugin is None:
+            ids = ", ".join(item.id for item in config.plugins) or "(no plugins declared)"
+            print_error(f"no plugin with id {target!r}", hint=f"available targets: core, {ids}")
+            return EXIT_FAILURE
+
+    if prompter is None:
+        if not stdin_is_tty():
+            print_error(
+                "rocket pin is interactive; run it in a terminal",
+                hint="or pin an exact version by hand, then run rocket download",
+            )
+            return EXIT_FAILURE
+        prompter = QuestionaryPrompter()
+
+    if target is None:
+        if not config.plugins:
+            target = "core"
+        else:
+            choices = [("Paper core", "core")]
+            choices += [
+                (f"plugin {item.id} ({item.provider}:{item.project})", item.id)
+                for item in config.plugins
+            ]
+            target = prompter.select("What to pin", choices, default="core")
+        if target != "core":
+            plugin = next((item for item in config.plugins if item.id == target), None)
+            if plugin is None:  # unreachable: the choices come from the config itself
+                raise RocketError(f"internal error: plugin {target!r} vanished from the config")
+
+    with HTTPClient(
+        user_agent=config.http.user_agent,
+        timeout_seconds=config.http.timeout_seconds,
+        retries=config.http.retries,
+        transport=transport,
+        sleep=sleep,
+        github_token=os.environ.get("GITHUB_TOKEN"),
+    ) as http:
+        try:
+            if plugin is None:
+                paper_pin = _pin_core(config, http=http, prompter=prompter)
+                if paper_pin is None:
+                    print("nothing to change")
+                    return EXIT_OK
+                exit_code, _failed = _apply_pins_and_download(
+                    config_path,
+                    paper=paper_pin,
+                    plugins={},
+                    refresh=frozenset(),
+                    original_paper=PaperPin(version=config.paper.version, build=config.paper.build),
+                    original_plugins={},
+                    transport=transport,
+                    sleep=sleep,
+                )
+            else:
+                plugin_pin = _pin_plugin(plugin, config, http=http, prompter=prompter)
+                if plugin_pin is None:
+                    print("nothing to change")
+                    return EXIT_OK
+                exit_code, _failed = _apply_pins_and_download(
+                    config_path,
+                    paper=None,
+                    plugins={plugin.id: plugin_pin},
+                    refresh=frozenset(),
+                    original_paper=None,
+                    original_plugins={
+                        plugin.id: PluginPin(version=plugin.version, asset=plugin.asset)
+                    },
+                    transport=transport,
+                    sleep=sleep,
+                )
+        except RocketError as exc:
+            print_error(exc.message, hint=exc.hint)
+            return EXIT_FAILURE
+        except Exception as exc:
+            _print_unexpected_error(target, exc)
+            return EXIT_FAILURE
+    return exit_code
+
+
+def _pin_core(config: Config, *, http: HTTPClient, prompter: Prompter) -> PaperPin | None:
+    """Two-level exact Paper selection (release line → version → build); None = no change."""
+    groups = fetch_paper_versions(http)
+    stable_groups = [
+        (group, [member for member in members if "-rc" not in member and "-pre" not in member])
+        for group, members in groups.items()
+    ]
+    stable_groups = [(group, members) for group, members in stable_groups if members]
+    if not stable_groups:
+        raise ProviderError("Fill project response has no usable stable version groups")
+
+    current = config.paper.version
+    current_group = next(
+        (group for group, members in stable_groups if current in members), stable_groups[0][0]
+    )
+    line = prompter.select(
+        f"Paper release line (current: {current})",
+        [(group, group) for group, _members in stable_groups],
+        default=current_group,
+    )
+    members = dict(stable_groups)[line]
+    default_version = current if current in members else members[0]
+    version = prompter.select(
+        f"Paper version (line {line})",
+        [
+            (f"{member} (current)", member) if member == current else (member, member)
+            for member in members
+        ],
+        default=default_version,
+    )
+
+    builds = fetch_stable_build_ids(http, version)
+    if not builds:
+        raise ProviderError(f"Paper {version} has no STABLE builds", hint="pick another version")
+    build_choices = [("always the newest STABLE build (unpinned)", _PIN_AUTO_BUILD)]
+    build_choices += [(f"build {build} (pinned)", str(build)) for build in builds[:10]]
+    default_build = (
+        str(config.paper.build)
+        if version == current and config.paper.build in builds
+        else _PIN_AUTO_BUILD
+    )
+    picked = prompter.select(f"Paper build for {version}", build_choices, default=default_build)
+    build = None if picked == _PIN_AUTO_BUILD else int(picked)
+    if version == current and build == config.paper.build:
+        return None
+    return PaperPin(version=version, build=build)
+
+
+def _pin_plugin(
+    plugin: PluginConfig, config: Config, *, http: HTTPClient, prompter: Prompter
+) -> PluginPin | None:
+    """Exact version (and file, when ambiguous) for one plugin; None = no change."""
+    minecraft_version = config.paper.version
+    modrinth = ModrinthClient(http)
+    github = GitHubClient(http)
+    if plugin.provider == "hangar":
+        versions = list_hangar_versions(
+            http, project=plugin.project, minecraft_version=minecraft_version
+        )
+    elif plugin.provider == "modrinth":
+        versions = list_modrinth_versions(
+            modrinth, plugin.project, minecraft_version=minecraft_version
+        )
+    elif plugin.provider == "github":
+        versions = [(tag, "release") for tag in list_github_releases(github, plugin.project)]
+    else:
+        raise RocketError(f"internal error: unsupported provider {plugin.provider!r}")
+
+    choices = [
+        (
+            f"{name} · {kind} (current)" if name == plugin.version else f"{name} · {kind}",
+            name,
+        )
+        for name, kind in versions
+    ]
+    default = (
+        plugin.version if any(name == plugin.version for name, _kind in versions) else choices[0][1]
+    )
+    version = prompter.select(
+        f"{plugin.id} version (current: {plugin.version})", choices, default=default
+    )
+
+    if plugin.provider == "hangar":
+        asset, file_choices = hangar_version_file_choices(
+            http, github, project=plugin.project, version=version
+        )
+    elif plugin.provider == "modrinth":
+        asset, file_choices = modrinth_version_file_choices(
+            modrinth, plugin.project, version=version
+        )
+    else:
+        asset, file_choices = github_release_file_choices(github, plugin.project, tag=version)
+    if file_choices:
+        asset = prompter.select(
+            f"{plugin.id} {version} file",
+            [(name, name) for name in file_choices],
+            default=file_choices[0],
+        )
+    if version == plugin.version and asset == plugin.asset:
+        return None
+    return PluginPin(version=version, asset=asset)
 
 
 def _iter_items(config: Config) -> list[_Item]:
