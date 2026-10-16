@@ -7,7 +7,8 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
 - Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
-- Finds plugins on Hangar and Modrinth by keyword (`rocket search`);
+- Finds plugins on Hangar and Modrinth by keyword (`rocket search`), one ranked list with
+  cmd+clickable project links on a TTY;
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
 - Concurrent downloads (up to 4 at once) with a single live progress bar on a TTY;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
@@ -109,20 +110,27 @@ uv run python -m rocket init --config my/server.toml --force
 
 ## Finding plugins (`rocket search`)
 
-`rocket search <query>` searches Hangar and Modrinth by keyword and prints the coordinates to
-declare, most downloaded first (five per provider at most):
+`rocket search <query>` searches Hangar and Modrinth by keyword and merges the hits into one
+list ranked by downloads (five per provider at most):
 
 ```text
 $ rocket search luckperms
-  hangar:jaapie_aapie/LuckpermsChatPlus  LuckpermsChatPlus — A more modern Luckperms chat formatter
-  hangar:Ciran/Luckperms-Supporter       Luckperms-Supporter — A small LuckPerms addon-style plugin
-  modrinth:luckperms                     LuckPerms — A permissions plugin/mod for Minecraft servers.
-  modrinth:lpc-chat                      LPC Minimessage - Chat Formatter — A chat formatting plugin
+  modrinth:luckperms · 3.0M downloads
+    A permissions plugin/mod for Minecraft servers.
+
+  LPC Minimessage - Chat Formatter — modrinth:lpc-chat · 88.8K downloads
+    A chat formatting with Minimessage Support plugin for LuckPerms.
+
+  hangar:jaapie_aapie/LuckpermsChatPlus · 503 downloads
+    A more modern Luckperms chat formatter
 ```
 
-Each line starts with the `provider:project` pair accepted by `rocket add`. The command needs no
-config file; when one provider is unreachable the other's results are still printed and the exit
-code is `1`. An empty result list is not an error.
+Each block leads with the `provider:project` pair accepted by `rocket add`; when the display
+name differs from the project slug it is shown first instead. On a TTY the title is a
+cmd+clickable link to the project page and descriptions are truncated to the terminal width;
+off a TTY the output is plain text with the same layout. The command needs no config file;
+when one provider is unreachable the other's results are still printed and the exit code is
+`1`. An empty result list is not an error.
 
 ## Adding and removing plugins (`rocket add` / `rocket remove`)
 
@@ -318,6 +326,7 @@ data only and is never executed.
 | `questionary` | interactive prompts for `rocket init` |
 | `tomli-w` | writing server.toml from `rocket init` (reading still uses the standard library) |
 | `tqdm` | the single download progress bar; disables itself off a TTY, so CI and scripts see plain output |
+| `blessed` | terminal styling and OSC 8 hyperlinks for `rocket search`; disables itself off a TTY |
 | standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, `concurrent.futures`, etc. |
 
 ## Tests

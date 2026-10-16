@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -246,14 +247,58 @@ def _run_search(
     return EXIT_FAILURE if failures else EXIT_OK
 
 
+_SEARCH_PAGE_URL = {
+    "hangar": "https://hangar.papermc.io/{project}",
+    "modrinth": "https://modrinth.com/project/{project}",
+}
+
+
 def _print_search_results(results: list[SearchResult]) -> None:
-    specs = [f"{result.provider}:{result.project}" for result in results]
-    width = max(len(spec) for spec in specs)
-    for spec, result in zip(specs, results, strict=True):
-        line = f"  {spec.ljust(width)}  {result.name}"
-        if result.description:
-            line += f" — {result.description}"
-        print(line)
+    """Print one block per hit: a bold linked name, dim coordinates and an indented tagline.
+
+    Hits from all providers are merged and ordered by downloads (unknown last). On a TTY
+    the name is a cmd+clickable link to the project page (OSC 8) and descriptions are
+    truncated to the terminal width; off a TTY everything degrades to plain text.
+    """
+    from blessed import Terminal  # lazy import, like questionary: plain runs stay fast
+
+    term = Terminal(stream=sys.stdout)
+    ordered = sorted(
+        results, key=lambda result: (result.downloads is None, -(result.downloads or 0))
+    )
+    width = term.width or 80  # degenerate ptys can report 0; fall back like shutil does
+    description_width = max(width - 5, 20)
+    for index, result in enumerate(ordered):
+        if index:
+            print()
+        spec = f"{result.provider}:{result.project}"
+        meta = (
+            f" · {_format_count(result.downloads)} downloads"
+            if result.downloads is not None
+            else ""
+        )
+        # A name that merely restyles the slug ("EssentialsX" vs "essentialsx") adds no
+        # information; lead with the spec instead so long owner/name pairs still fit.
+        title, tail = (result.name, f" — {spec}{meta}") if _name_adds_info(result) else (spec, meta)
+        page_url = _SEARCH_PAGE_URL[result.provider].format(project=result.project)
+        print("  " + term.link(page_url, term.bold(title)) + term.dim(tail))
+        description = result.description
+        if description:
+            wrapped = term.wrap(description, width=description_width)
+            if wrapped:
+                first = wrapped[0]
+                if len(wrapped) > 1:
+                    first = first.rstrip() + "…"
+                print(f"    {term.dim(first)}")
+
+
+def _name_adds_info(result: SearchResult) -> bool:
+    """Whether the display name differs enough from the project slug to show both."""
+
+    def normalize(text: str) -> str:
+        return re.sub(r"[\s_]+", "-", text.strip().lower())
+
+    return normalize(result.name) != normalize(result.project.rsplit("/", 1)[-1])
 
 
 def run_add(
@@ -882,6 +927,17 @@ def _format_size(value: int) -> str:
     if value < 1024**3:
         return f"{value / 1024**2:.1f}MB"
     return f"{value / 1024**3:.2f}GB"
+
+
+def _format_count(value: int) -> str:
+    """Render a download count like ``845``, ``12.3K`` or ``5.2M``."""
+    if value < 1_000:
+        return str(value)
+    if value < 999_950:  # below this, one decimal never rounds up to the next unit
+        return f"{value / 1_000:.1f}K"
+    if value < 999_950_000:
+        return f"{value / 1_000_000:.1f}M"
+    return f"{value / 1_000_000_000:.1f}G"
 
 
 def _print_item_result(result: DownloadResult, *, verbose: bool) -> None:

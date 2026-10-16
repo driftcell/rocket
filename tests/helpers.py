@@ -355,13 +355,16 @@ def hangar_search_payload(items: list[object]) -> dict[str, object]:
 
 
 def hangar_search_item(
-    *, owner: str, slug: str, name: str, description: str = ""
+    *, owner: str, slug: str, name: str, description: str = "", downloads: int | None = 1234
 ) -> dict[str, object]:
+    stats: dict[str, object] = {"views": 100, "stars": 1, "watchers": 1}
+    if downloads is not None:
+        stats["downloads"] = downloads
     return {
         "name": name,
         "namespace": {"owner": owner, "slug": slug},
         "description": description,
-        "stats": {"downloads": 1234},
+        "stats": stats,
     }
 
 
@@ -369,15 +372,19 @@ def modrinth_search_payload(hits: list[object]) -> dict[str, object]:
     return {"hits": hits, "offset": 0, "limit": len(hits), "total_hits": len(hits)}
 
 
-def modrinth_search_hit(*, slug: str, title: str, description: str = "") -> dict[str, object]:
-    return {
+def modrinth_search_hit(
+    *, slug: str, title: str, description: str = "", downloads: int | None = 4321
+) -> dict[str, object]:
+    hit: dict[str, object] = {
         "project_id": slug[:8],
         "slug": slug,
         "title": title,
         "description": description,
         "project_type": "mod",
-        "downloads": 4321,
     }
+    if downloads is not None:
+        hit["downloads"] = downloads
+    return hit
 
 
 def modrinth_project_payload(*, slug: str) -> dict[str, object]:

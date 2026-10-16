@@ -45,19 +45,82 @@ def add_both_routes(api: FakeAPI) -> None:
     )
 
 
-def test_search_prints_copyable_specs(capsys) -> None:
+def test_search_prints_ranked_blocks(capsys) -> None:
     api = FakeAPI()
     add_both_routes(api)
 
     assert run_search(api) == 0
 
     captured = capsys.readouterr()
-    assert "  hangar:Owner/Good     Good — block logging and rollback\n" in captured.out
-    assert "  modrinth:coreprotect  CoreProtect — logging\n" in captured.out
+    assert captured.out == (
+        "  modrinth:coreprotect · 4.3K downloads\n"
+        "    logging\n"
+        "\n"
+        "  hangar:Owner/Good · 1.2K downloads\n"
+        "    block logging and rollback\n"
+    )
     assert captured.err == ""
 
 
-def test_search_without_description_omits_the_dash(capsys) -> None:
+def test_search_distinct_name_is_shown_with_the_spec(capsys) -> None:
+    api = FakeAPI()
+    api.add_json(hangar_search_url(QUERY), hangar_search_payload([]))
+    api.add_json(
+        modrinth_search_url(QUERY),
+        modrinth_search_payload(
+            [modrinth_search_hit(slug="coreprotect", title="CoreProtect CE", description="logging")]
+        ),
+    )
+
+    assert run_search(api) == 0
+
+    out = capsys.readouterr().out
+    assert out == "  CoreProtect CE — modrinth:coreprotect · 4.3K downloads\n    logging\n"
+
+
+def test_search_sorts_all_providers_by_downloads(capsys) -> None:
+    api = FakeAPI()
+    api.add_json(
+        hangar_search_url(QUERY),
+        hangar_search_payload(
+            [hangar_search_item(owner="Owner", slug="Good", name="Good", downloads=999_999)]
+        ),
+    )
+    api.add_json(
+        modrinth_search_url(QUERY),
+        modrinth_search_payload(
+            [modrinth_search_hit(slug="coreprotect", title="CoreProtect", downloads=5)]
+        ),
+    )
+
+    assert run_search(api) == 0
+
+    out = capsys.readouterr().out
+    assert out == ("  hangar:Owner/Good · 1.0M downloads\n\n  modrinth:coreprotect · 5 downloads\n")
+
+
+def test_search_unknown_downloads_sort_last_without_a_count(capsys) -> None:
+    api = FakeAPI()
+    api.add_json(
+        hangar_search_url(QUERY),
+        hangar_search_payload(
+            [hangar_search_item(owner="Owner", slug="Good", name="Good", downloads=None)]
+        ),
+    )
+    api.add_json(
+        modrinth_search_url(QUERY),
+        modrinth_search_payload(
+            [modrinth_search_hit(slug="coreprotect", title="CoreProtect", downloads=5)]
+        ),
+    )
+
+    assert run_search(api) == 0
+
+    out = capsys.readouterr().out
+    assert out == ("  modrinth:coreprotect · 5 downloads\n\n  hangar:Owner/Good\n")
+
+
+def test_search_without_description_omits_the_tagline(capsys) -> None:
     api = FakeAPI()
     api.add_json(
         hangar_search_url(QUERY),
@@ -67,7 +130,29 @@ def test_search_without_description_omits_the_dash(capsys) -> None:
 
     assert run_search(api) == 0
 
-    assert capsys.readouterr().out == "  hangar:Owner/Good  Good\n"
+    assert capsys.readouterr().out == "  hangar:Owner/Good · 1.2K downloads\n"
+
+
+def test_search_long_description_is_truncated_to_one_line(capsys, monkeypatch) -> None:
+    monkeypatch.setenv("COLUMNS", "80")
+    description = "word " * 40
+    api = FakeAPI()
+    api.add_json(
+        hangar_search_url(QUERY),
+        hangar_search_payload(
+            [hangar_search_item(owner="Owner", slug="Good", name="Good", description=description)]
+        ),
+    )
+    api.add_json(modrinth_search_url(QUERY), modrinth_search_payload([]))
+
+    assert run_search(api) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2
+    assert lines[1].startswith("    ")
+    assert lines[1].endswith("…")
+    assert len(lines[1]) <= 80
+    assert description.strip() not in lines[1]
 
 
 def test_search_no_results_is_success(capsys) -> None:
@@ -93,7 +178,7 @@ def test_search_one_provider_fails_the_other_still_prints(capsys) -> None:
     assert run_search(api) == 1
 
     captured = capsys.readouterr()
-    assert "  hangar:Owner/Good  Good\n" in captured.out
+    assert "  hangar:Owner/Good · 1.2K downloads\n" in captured.out
     assert "error: modrinth:" in captured.err
 
 
@@ -156,8 +241,8 @@ def test_search_skips_malformed_hits(capsys) -> None:
     assert run_search(api) == 0
 
     out = capsys.readouterr().out
-    assert "  hangar:Owner/Good     Good\n" in out
-    assert "  modrinth:coreprotect  CoreProtect\n" in out
+    assert "  modrinth:coreprotect · 4.3K downloads\n" in out
+    assert "  hangar:Owner/Good · 1.2K downloads\n" in out
     assert "NoNamespace" not in out
     assert "NoSlug" not in out
 
@@ -186,4 +271,4 @@ def test_search_network_error_is_reported(capsys) -> None:
 
     captured = capsys.readouterr()
     assert "error: hangar: network error" in captured.err
-    assert "  modrinth:coreprotect  CoreProtect\n" in captured.out
+    assert "  modrinth:coreprotect · 4.3K downloads\n" in captured.out
