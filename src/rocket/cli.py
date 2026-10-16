@@ -6,8 +6,10 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +50,7 @@ from .wizard import Prompter, run_init
 _log = logging.getLogger("rocket")
 
 _SEARCH_LIMIT = 5
+_DOWNLOAD_WORKERS = 4
 
 
 @dataclass(frozen=True)
@@ -569,6 +572,7 @@ def _run_download(
             log=_log,
         )
         downloader = HTTPDownloader(http, retries=config.http.retries, sleep=sleep, logger=_log)
+        pending: list[Artifact] = []
         for item in _iter_items(config):
             started = time.perf_counter()
             try:
@@ -586,19 +590,21 @@ def _run_download(
             resolve_seconds += time.perf_counter() - started
             resolved += 1
             fresh_entries[item.id] = _lock_entry(item, config, artifact)
+            pending.append(artifact)
 
-            started = time.perf_counter()
-            try:
-                result = downloader.fetch(artifact)
-            except RocketError as exc:
+        started = time.perf_counter()
+        by_index = _download_all(downloader, pending)
+        download_seconds = time.perf_counter() - started
+        for index in sorted(by_index):
+            outcome = by_index[index]
+            if isinstance(outcome, RocketError):
                 failures += 1
-                _print_item_error(item.id, exc)
-            except Exception as exc:
+                _print_item_error(pending[index].artifact_id, outcome)
+            elif isinstance(outcome, Exception):
                 failures += 1
-                _print_unexpected_error(item.id, exc)
+                _print_unexpected_error(pending[index].artifact_id, outcome)
             else:
-                entries.append(result)
-            download_seconds += time.perf_counter() - started
+                entries.append(outcome)
 
     if resolved or previous_lock is not None:
         try:
@@ -616,6 +622,54 @@ def _run_download(
     for result in entries:
         _print_item_result(result, verbose=verbose)
     return EXIT_FAILURE if failures else EXIT_OK
+
+
+def _download_all(
+    downloader: HTTPDownloader, artifacts: list[Artifact]
+) -> dict[int, DownloadResult | Exception]:
+    """Download artifacts concurrently; outcomes keep the config-order index.
+
+    Resolution stays sequential (provider clients cache in-run); downloads fan out to a
+    small pool: httpx.Client and the downloader are thread-safe, and each artifact writes
+    only its own target. Failures are captured per item and reported by the caller.
+    On a TTY a single shared progress bar (items plus transferred bytes) is shown and
+    erased on completion; off a TTY tqdm disables itself and output is unchanged.
+    """
+    outcomes: dict[int, DownloadResult | Exception] = {}
+    if not artifacts:
+        return outcomes
+
+    from tqdm import tqdm  # lazy import, like questionary: plain runs stay fast
+
+    total_bytes = sum(artifact.size for artifact in artifacts if artifact.size is not None)
+    transferred = 0
+    lock = threading.Lock()
+    with tqdm(
+        total=len(artifacts), unit="item", desc="Downloading", leave=False, disable=None
+    ) as progress:
+
+        def on_bytes(delta: int) -> None:
+            nonlocal transferred
+            with lock:
+                transferred += delta
+                if total_bytes:
+                    progress.set_postfix_str(
+                        f"{_format_size(transferred)}/{_format_size(total_bytes)}"
+                    )
+
+        with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_WORKERS, len(artifacts))) as pool:
+            futures = {
+                pool.submit(downloader.fetch, artifact, on_bytes=on_bytes): index
+                for index, artifact in enumerate(artifacts)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    outcomes[index] = future.result()
+                except Exception as exc:  # per-item failure isolation; reported by the caller
+                    outcomes[index] = exc
+                progress.update(1)
+    return outcomes
 
 
 def _iter_items(config: Config) -> list[_Item]:
@@ -817,6 +871,17 @@ def _format_duration(seconds: float) -> str:
         return f"{seconds:.1f}s"
     minutes, rest = divmod(seconds, 60)
     return f"{int(minutes)}m {rest:.0f}s"
+
+
+def _format_size(value: int) -> str:
+    """Render a byte count like ``512B``, ``12.3MB`` or ``2.00GB``."""
+    if value < 1024:
+        return f"{value}B"
+    if value < 1024**2:
+        return f"{value / 1024:.1f}KB"
+    if value < 1024**3:
+        return f"{value / 1024**2:.1f}MB"
+    return f"{value / 1024**3:.2f}GB"
 
 
 def _print_item_result(result: DownloadResult, *, verbose: bool) -> None:

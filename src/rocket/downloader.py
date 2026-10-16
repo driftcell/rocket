@@ -50,16 +50,18 @@ class HTTPDownloader:
             before_sleep=before_sleep_log(self._log, logging.WARNING),
         )
 
-    def fetch(self, artifact: Artifact) -> DownloadResult:
+    def fetch(
+        self, artifact: Artifact, *, on_bytes: Callable[[int], None] | None = None
+    ) -> DownloadResult:
         """Download and verify; on failure clean up the temporary file and keep the existing
-        target."""
+        target. ``on_bytes`` receives each written chunk size (used for progress display)."""
         target = artifact.target
         if artifact.checksum is not None and target.is_file():
             skipped = self._try_skip(artifact)
             if skipped is not None:
                 return skipped
 
-        temp_path = self._retryer(self._download_attempt, artifact)
+        temp_path = self._retryer(self._download_attempt, artifact, on_bytes)
         try:
             size = temp_path.stat().st_size
             _check_size(artifact, size)
@@ -153,7 +155,7 @@ class HTTPDownloader:
             upstream_hash_verified=True,
         )
 
-    def _download_attempt(self, artifact: Artifact) -> Path:
+    def _download_attempt(self, artifact: Artifact, on_bytes: Callable[[int], None] | None) -> Path:
         """One full download attempt; cleans up its temporary file on failure."""
         target = artifact.target
         try:
@@ -165,13 +167,15 @@ class HTTPDownloader:
             ) from exc
         temp_path = _new_temp_path(target)
         try:
-            self._stream_to_file(artifact.url, temp_path)
+            self._stream_to_file(artifact.url, temp_path, on_bytes)
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
         return temp_path
 
-    def _stream_to_file(self, url: str, temp_path: Path) -> None:
+    def _stream_to_file(
+        self, url: str, temp_path: Path, on_bytes: Callable[[int], None] | None
+    ) -> None:
         with self._http.stream(url) as response:
             try:
                 file_obj = temp_path.open("wb")
@@ -184,6 +188,8 @@ class HTTPDownloader:
                 try:
                     for chunk in response.iter_bytes(_CHUNK_SIZE):
                         file_obj.write(chunk)
+                        if on_bytes is not None:
+                            on_bytes(len(chunk))
                 except httpx.TransportError as exc:
                     raise StreamInterruptedError(
                         f"download interrupted ({exc.__class__.__name__}): {url}",

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
+import httpx
+
 from rocket import __version__
-from rocket.cli import _format_duration, main
+from rocket.cli import _format_duration, _format_size, main
 
 from .helpers import (
     FakeAPI,
@@ -134,6 +137,72 @@ def test_one_plugin_fails_others_succeed(tmp_path: Path, capsys) -> None:
     assert "Downloaded 2 items" in captured.out
     assert "error: bad:" in captured.err
     assert_no_unexpected_state_files(tmp_path)
+
+
+def add_hangar_plugin_routes(
+    api: FakeAPI, slug: str, jar: bytes, *, event: threading.Event | None = None
+) -> str:
+    url = f"https://hangarcdn.papermc.io/plugins/Owner/{slug}/versions/1.0.0/PAPER/{slug}-1.0.0.jar"
+    api.add_json(hangar_project_url(slug), hangar_project_payload(owner="Owner", slug=slug))
+    api.add_json(
+        hangar_version_url(slug, "1.0.0"),
+        hangar_version_payload(
+            name="1.0.0",
+            downloads=hangar_native_paper(
+                download_url=url,
+                name=f"{slug}-1.0.0.jar",
+                sha256=sha256_hex(jar),
+                size=len(jar),
+            ),
+            platform_dependencies={"PAPER": ["26.1.2"]},
+        ),
+    )
+    if event is None:
+        api.add_bytes(url, jar)
+    else:
+
+        def gated_response() -> httpx.Response:
+            # hold this download back until the other one has started
+            assert event.wait(timeout=10)
+            return httpx.Response(
+                200, headers={"Content-Type": "application/java-archive"}, content=jar
+            )
+
+        api.add_response(url, gated_response)
+    return url
+
+
+def test_parallel_downloads_print_in_config_order(tmp_path: Path, capsys) -> None:
+    """The slow first item finishes after the fast second one; output stays in config order."""
+    api = FakeAPI()
+    add_paper_routes(api)
+    slow_jar = make_plugin_jar_bytes(name="Slow")
+    fast_jar = make_plugin_jar_bytes(name="Fast")
+    fast_started = threading.Event()
+    add_hangar_plugin_routes(api, "Slow", slow_jar, event=fast_started)
+
+    def fast_response() -> httpx.Response:
+        fast_started.set()
+        return httpx.Response(
+            200, headers={"Content-Type": "application/java-archive"}, content=fast_jar
+        )
+
+    fast_url = add_hangar_plugin_routes(api, "Fast", fast_jar)
+    api._routes[fast_url] = fast_response
+
+    config = base_config(
+        '[plugins.slow]\nprovider = "hangar"\nproject = "Owner/Slow"\nversion = "1.0.0"\n\n'
+        '[plugins.fast]\nprovider = "hangar"\nproject = "Owner/Fast"\nversion = "1.0.0"\n'
+    )
+    code = run_main(tmp_path, api, config)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Downloaded 3 items" in out
+    assert out.index(" + slow.jar") < out.index(" + fast.jar")
+    artifacts = tmp_path / "artifacts" / "plugins"
+    assert (artifacts / "slow.jar").read_bytes() == slow_jar
+    assert (artifacts / "fast.jar").read_bytes() == fast_jar
 
 
 def test_default_config_path_from_cwd(tmp_path: Path, monkeypatch) -> None:
@@ -357,6 +426,13 @@ def test_format_duration_units() -> None:
     assert _format_duration(0.012) == "12ms"
     assert _format_duration(3.5) == "3.5s"
     assert _format_duration(75.4) == "1m 15s"
+
+
+def test_format_size_units() -> None:
+    assert _format_size(512) == "512B"
+    assert _format_size(2048) == "2.0KB"
+    assert _format_size(3_500_000) == "3.3MB"
+    assert _format_size(2**31) == "2.00GB"
 
 
 def test_unknown_command_exits_2() -> None:
