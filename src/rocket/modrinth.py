@@ -135,12 +135,14 @@ class ModrinthClient:
             title = hit.get("title")
             if not isinstance(slug, str) or not slug or not isinstance(title, str) or not title:
                 continue
+            downloads = hit.get("downloads")
             results.append(
                 SearchResult(
                     provider="modrinth",
                     project=slug,
                     name=title,
                     description=_one_line(hit.get("description")),
+                    downloads=downloads if isinstance(downloads, int) else None,
                 )
             )
         return tuple(results)

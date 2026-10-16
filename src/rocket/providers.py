@@ -406,12 +406,15 @@ def search_hangar_projects(http: HTTPClient, query: str, *, limit: int) -> tuple
             or not name
         ):
             continue
+        stats = item.get("stats")
+        downloads = stats.get("downloads") if isinstance(stats, dict) else None
         results.append(
             SearchResult(
                 provider="hangar",
                 project=f"{owner}/{slug}",
                 name=name,
                 description=_one_line(item.get("description")),
+                downloads=downloads if isinstance(downloads, int) else None,
             )
         )
     return tuple(results)

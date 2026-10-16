@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from rocket import __version__
-from rocket.cli import _format_duration, _format_size, main
+from rocket.cli import _format_count, _format_duration, _format_size, main
 
 from .helpers import (
     FakeAPI,
@@ -433,6 +433,14 @@ def test_format_size_units() -> None:
     assert _format_size(2048) == "2.0KB"
     assert _format_size(3_500_000) == "3.3MB"
     assert _format_size(2**31) == "2.00GB"
+
+
+def test_format_count_units() -> None:
+    assert _format_count(845) == "845"
+    assert _format_count(12_345) == "12.3K"
+    assert _format_count(999_949) == "999.9K"
+    assert _format_count(999_999) == "1.0M"
+    assert _format_count(5_234_567) == "5.2M"
 
 
 def test_unknown_command_exits_2() -> None:

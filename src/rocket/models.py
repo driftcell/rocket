@@ -131,6 +131,7 @@ class SearchResult:
     project: str
     name: str
     description: str = ""
+    downloads: int | None = None
 
 
 @dataclass(frozen=True)
