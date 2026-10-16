@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -15,7 +14,7 @@ import tomli_w
 
 from . import USER_AGENT
 from .catalog import DEFAULT_PLUGINS, CatalogPlugin
-from .console import install_logging, print_error, remove_logging, terminal
+from .console import install_logging, print_error, remove_logging, stdin_is_tty, terminal
 from .errors import EXIT_FAILURE, EXIT_OK, RocketError
 from .http_client import HTTPClient
 from .recommend import (
@@ -252,7 +251,4 @@ def build_config_text(*, paper_version: str, plugins: Sequence[RecommendedPlugin
 
 
 def _stdin_is_tty() -> bool:
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):  # pragma: no cover - closed or unusual streams
-        return False
+    return stdin_is_tty()

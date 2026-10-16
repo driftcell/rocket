@@ -39,3 +39,10 @@ def install_logging(level: int = logging.WARNING) -> logging.Handler:
 def remove_logging(handler: logging.Handler) -> None:
     logging.getLogger("rocket").removeHandler(handler)
     handler.close()
+
+
+def stdin_is_tty() -> bool:
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):  # pragma: no cover - closed or unusual streams
+        return False

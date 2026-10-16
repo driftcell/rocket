@@ -214,6 +214,30 @@ def fetch_paper_versions(http: HTTPClient) -> dict[str, list[str]]:
     return result
 
 
+def fetch_newest_stable_build(http: HTTPClient, version: str) -> int | None:
+    """The highest STABLE build id for an exact Paper release; None when there is none."""
+    url = f"{_FILL_BASE}/projects/paper/versions/{quote(version, safe='')}/builds"
+    payload = http.get_json(url)
+    _raise_on_api_error(payload, context=f"build list for version {version}")
+    if not isinstance(payload, list):
+        raise ProviderError(
+            f"Fill build list response has invalid structure (version {version}, expected array)",
+            hint=(
+                "the upstream response contract may have changed; "
+                "update the adapter instead of guessing"
+            ),
+        )
+    stable_ids = [
+        item["id"]
+        for item in payload
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and not isinstance(item.get("id"), bool)
+        and item.get("channel") == "STABLE"
+    ]
+    return max(stable_ids) if stable_ids else None
+
+
 class HangarProvider(PluginProvider):
     """Hangar API v1."""
 

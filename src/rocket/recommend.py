@@ -29,7 +29,14 @@ from .github import (
     parse_project,
 )
 from .http_client import HTTPClient
-from .modrinth import PAPER_LOADERS, ModrinthClient, ModrinthVersion, parse_slug, select_file
+from .modrinth import (
+    PAPER_LOADERS,
+    ModrinthClient,
+    ModrinthFile,
+    ModrinthVersion,
+    parse_slug,
+    select_file,
+)
 from .providers import fetch_paper_versions
 
 _HANGAR_BASE = "https://hangar.papermc.io/api/v1"
@@ -171,6 +178,31 @@ def recommend_plugin(
     if isinstance(outcome, SkippedPlugin):
         raise ProviderError(outcome.reason)
     return outcome
+
+
+def asset_template(asset: str, version: str) -> str:
+    """Recover a catalog-style ``{version}`` template from a concrete pinned filename.
+
+    Filenames do not always spell the version tag literally (``v5.5.60`` may appear as
+    ``5.5.60``), so every filename form of the pinned version is tried.
+    """
+    for form in _version_forms(version):
+        if form in asset:
+            return asset.replace(form, "{version}")
+    return asset
+
+
+def _version_forms(version: str) -> tuple[str, ...]:
+    """Filename spellings of a version tag: itself, without a ``v`` prefix, without suffixes."""
+    forms = [version]
+    unv = version[1:] if version.startswith("v") else version
+    if unv != version:
+        forms.append(unv)
+    for base in (version, unv):
+        stem = base.split("-", 1)[0]
+        if stem and stem not in forms:
+            forms.append(stem)
+    return tuple(forms)
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +454,7 @@ def _recommend_modrinth_plugin(
             modrinth, plugin.project, minecraft_version=minecraft_version
         )
         selector = plugin.assets[0] if plugin.assets else None
-        file = select_file(version, selector=selector)
+        file = _select_modrinth_file(version, selector)
     except RocketError as exc:
         return SkippedPlugin(plugin.id, exc.message)
     note = ""
@@ -436,6 +468,23 @@ def _recommend_modrinth_plugin(
         asset=file.filename,
         note=note,
     )
+
+
+def _select_modrinth_file(version: ModrinthVersion, selector: str | None) -> ModrinthFile:
+    """Pick the file for a recommendation; templates try every filename form of the tag.
+
+    A template derived from an old pin may match nothing (the new filenames spell the
+    version differently); then a unique JAR is still unambiguous, and several JARs fail
+    with the usual "cannot choose" listing.
+    """
+    if selector is not None and "{version}" in selector:
+        names = {file.filename for file in version.files}
+        for form in _version_forms(version.version_number):
+            candidate = selector.replace("{version}", form)
+            if candidate in names:
+                return select_file(version, selector=candidate)
+        return select_file(version, selector=None)
+    return select_file(version, selector=selector)
 
 
 def _pick_modrinth_version(

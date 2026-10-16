@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -75,6 +75,60 @@ def corrupt_zip(content: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # MockTransport backend
 # ---------------------------------------------------------------------------
+
+
+class ScriptedPrompter:
+    """Test double replaying predefined answers and recording every prompt."""
+
+    def __init__(
+        self,
+        *,
+        select: Sequence[str] = (),
+        text: str = "",
+        confirm: bool = True,
+        checkbox: list[str] | None = None,
+        abort_on: str | None = None,
+    ) -> None:
+        self._select = list(select)
+        self._text = text
+        self._confirm = confirm
+        self._checkbox = checkbox
+        self._abort_on = abort_on
+        self.calls: list[tuple[str, str]] = []
+        self.choices: dict[str, list[str]] = {}
+
+    def _abort(self, kind: str) -> None:
+        if self._abort_on == kind:
+            raise KeyboardInterrupt
+
+    def select(self, message: str, choices: Sequence[tuple[str, str]], *, default: str) -> str:
+        self._abort("select")
+        self.calls.append(("select", message))
+        values = [value for _, value in choices]
+        self.choices[message] = values
+        assert self._select, f"no scripted select answer left for {message!r}"
+        answer = self._select.pop(0)
+        assert answer in values, f"select answer {answer!r} not in {values}"
+        return answer
+
+    def text(self, message: str, *, default: str = "") -> str:
+        self._abort("text")
+        self.calls.append(("text", message))
+        return self._text
+
+    def confirm(self, message: str, *, default: bool = True) -> bool:
+        self._abort("confirm")
+        self.calls.append(("confirm", message))
+        return self._confirm
+
+    def checkbox(self, message: str, choices: Sequence[tuple[str, str]]) -> list[str]:
+        self._abort("checkbox")
+        self.calls.append(("checkbox", message))
+        values = [value for _, value in choices]
+        self.choices[message] = values
+        wanted = values if self._checkbox is None else self._checkbox
+        assert all(value in values for value in wanted)
+        return list(wanted)
 
 
 class FakeAPI:
