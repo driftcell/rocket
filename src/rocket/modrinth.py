@@ -9,10 +9,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 from .errors import HTTPStatusError, ProviderError
 from .http_client import HTTPClient
-from .models import Checksum
+from .models import Checksum, SearchResult
 
 _API_BASE = "https://api.modrinth.com/v2"
 _SLUG_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -110,6 +111,39 @@ class ModrinthClient:
             raise ProviderError(f"Modrinth project has no usable versions: {slug!r}")
         self._versions[key] = versions
         return versions
+
+    def search_projects(self, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+        """Search projects by keyword, most downloaded first."""
+        params = urlencode({"query": query, "limit": str(limit), "index": "downloads"})
+        payload = self._http.get_json(f"{_API_BASE}/search?{params}")
+        if not isinstance(payload, dict):
+            raise ProviderError("Modrinth search response has invalid structure (expected object)")
+        hits = payload.get("hits")
+        if not isinstance(hits, list):
+            raise ProviderError(
+                "Modrinth search response is missing the hits field",
+                hint=(
+                    "the upstream response contract may have changed; "
+                    "update the adapter instead of guessing"
+                ),
+            )
+        results: list[SearchResult] = []
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            slug = hit.get("slug")
+            title = hit.get("title")
+            if not isinstance(slug, str) or not slug or not isinstance(title, str) or not title:
+                continue
+            results.append(
+                SearchResult(
+                    provider="modrinth",
+                    project=slug,
+                    name=title,
+                    description=_one_line(hit.get("description")),
+                )
+            )
+        return tuple(results)
 
 
 def select_version(
@@ -266,3 +300,7 @@ def _summarize(items: list[str]) -> str:
     if not items:
         return "(none)"
     return ", ".join(items)
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(value.split()) if isinstance(value, str) else ""

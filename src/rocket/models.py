@@ -124,6 +124,16 @@ class Artifact:
 
 
 @dataclass(frozen=True)
+class SearchResult:
+    """One plugin search hit; ``provider:project`` is the coordinates form used by config."""
+
+    provider: str
+    project: str
+    name: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class DownloadResult:
     """Final result for a single item (used for command output)."""
 

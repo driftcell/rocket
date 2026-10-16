@@ -7,6 +7,7 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
 - Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
+- Finds plugins on Hangar and Modrinth by keyword (`rocket search`);
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
 - Writes a `rocket.lock` pinning the resolved Paper build and plugin artifacts, reused by later runs.
@@ -103,6 +104,24 @@ still written.
 uv run python -m rocket init                       # writes ./server.toml
 uv run python -m rocket init --config my/server.toml --force
 ```
+
+## Finding plugins (`rocket search`)
+
+`rocket search <query>` searches Hangar and Modrinth by keyword and prints the coordinates to
+declare, most downloaded first (five per provider at most):
+
+```text
+$ rocket search luckperms
+  hangar:jaapie_aapie/LuckpermsChatPlus  LuckpermsChatPlus — A more modern Luckperms chat formatter
+  hangar:Ciran/Luckperms-Supporter       Luckperms-Supporter — A small LuckPerms addon-style plugin
+  modrinth:luckperms                     LuckPerms — A permissions plugin/mod for Minecraft servers.
+  modrinth:lpc-chat                      LPC Minimessage - Chat Formatter — A chat formatting plugin
+```
+
+Each line starts with the `provider:project` pair that goes into `plugins.<id>.project` when adding
+the plugin to `server.toml` by hand. The command needs no config file; when one provider is
+unreachable the other's results are still printed and the exit code is `1`. An empty result list is
+not an error.
 
 The generated file pins exact versions and uses `rocket/0.2.0 (https://github.com/driftcell/rocket)`
 as `http.user_agent`; replace the contact with your own email or project URL if you prefer. An
@@ -233,8 +252,9 @@ stdout is a TTY; set `NO_COLOR` to disable colors. Example resolution chains:
 | 1 | resolution, download, validation or lock-write failures occurred (other items keep processing) |
 | 2 | invalid config (fails before any network request) |
 
-`rocket init` uses `0` when the file was written and `1` when the run was aborted (Ctrl-C) or
-refused to overwrite an existing file (use `--force`).
+| `rocket init` uses `0` when the file was written and `1` when the run was aborted (Ctrl-C) or
+refused to overwrite an existing file (use `--force`). `rocket search` uses `0` when the search ran
+(even with no results) and `1` when a provider failed.
 
 ## Re-runs and correctness
 
@@ -328,7 +348,7 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 ```
 src/rocket/
   __main__.py     python -m rocket entry point
-  cli.py          download/init subcommands, per-item results, exit codes
+  cli.py          download/init/search subcommands, per-item results, exit codes
   wizard.py       init: interactive prompts, recommendations and server.toml output
   catalog.py      init: curated default plugin catalog
   recommend.py    init: newest usable version per catalog entry

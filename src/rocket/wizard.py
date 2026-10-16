@@ -13,7 +13,7 @@ from typing import Protocol
 import httpx
 import tomli_w
 
-from . import __version__
+from . import USER_AGENT
 from .catalog import DEFAULT_PLUGINS, CatalogPlugin
 from .console import install_logging, print_error, remove_logging
 from .errors import EXIT_FAILURE, EXIT_OK, RocketError
@@ -27,7 +27,8 @@ from .recommend import (
 
 _log = logging.getLogger("rocket")
 
-INIT_USER_AGENT = f"rocket/{__version__} (https://github.com/driftcell/rocket)"
+# referenced by the release skill and tests
+INIT_USER_AGENT = USER_AGENT
 
 _SERVER_TYPE_CHOICES = [("Paper", "paper")]
 

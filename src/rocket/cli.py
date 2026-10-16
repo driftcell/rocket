@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m rocket download`` and ``python -m rocket init``."""
+"""Command-line entry point: ``rocket download``, ``rocket init`` and ``rocket search``."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 
-from . import __version__
+from . import USER_AGENT, __version__
 from .config import Config, PluginConfig, load_config
 from .console import install_logging, print_error, remove_logging, style
 from .context import PipelineContext
@@ -35,14 +35,17 @@ from .models import (
     EntryKind,
     ReleaseInfo,
     ResolverChoice,
+    SearchResult,
     Status,
 )
 from .modrinth import ModrinthClient
-from .providers import PROVIDERS, FillPaperProvider
+from .providers import PROVIDERS, FillPaperProvider, search_hangar_projects
 from .resolvers import select_resolver
 from .wizard import Prompter, run_init
 
 _log = logging.getLogger("rocket")
+
+_SEARCH_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,14 @@ def main(
         action="store_true",
         help="overwrite an existing config file",
     )
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search Hangar and Modrinth for plugins",
+    )
+    search_parser.add_argument(
+        "query",
+        help="search keywords, e.g. 'luckperms'",
+    )
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(
@@ -116,6 +127,8 @@ def main(
             sleep=sleep,
             prompter=prompter,
         )
+    if args.command == "search":
+        return run_search(args.query, transport=transport, sleep=sleep)
     return run_download(
         Path(args.config),
         transport=transport,
@@ -123,6 +136,66 @@ def main(
         verbose=args.verbose,
         upgrade=args.upgrade,
     )
+
+
+def run_search(
+    query: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Search Hangar and Modrinth; return 0 when the search ran, 1 when a provider failed.
+
+    ``transport``/``sleep`` are only for test injection.
+    """
+    handler = install_logging()
+    try:
+        return _run_search(query, transport=transport, sleep=sleep)
+    finally:
+        remove_logging(handler)
+
+
+def _run_search(
+    query: str,
+    *,
+    transport: httpx.BaseTransport | None,
+    sleep: Callable[[float], None],
+) -> int:
+    query = query.strip()
+    if not query:
+        print_error("search query must not be empty", hint="example: rocket search luckperms")
+        return EXIT_FAILURE
+    results: list[SearchResult] = []
+    failures = 0
+    with HTTPClient(user_agent=USER_AGENT, transport=transport, sleep=sleep) as http:
+        searches = (
+            ("hangar", lambda: search_hangar_projects(http, query, limit=_SEARCH_LIMIT)),
+            ("modrinth", lambda: ModrinthClient(http).search_projects(query, limit=_SEARCH_LIMIT)),
+        )
+        for provider, search in searches:
+            try:
+                results.extend(search())
+            except RocketError as exc:
+                failures += 1
+                print_error(f"{provider}: {exc.message}", hint=exc.hint)
+            except Exception as exc:
+                failures += 1
+                _print_unexpected_error(provider, exc)
+    if results:
+        _print_search_results(results)
+    elif not failures:
+        print(f"no plugins found for {query!r}")
+    return EXIT_FAILURE if failures else EXIT_OK
+
+
+def _print_search_results(results: list[SearchResult]) -> None:
+    specs = [f"{result.provider}:{result.project}" for result in results]
+    width = max(len(spec) for spec in specs)
+    for spec, result in zip(specs, results, strict=True):
+        line = f"  {spec.ljust(width)}  {result.name}"
+        if result.description:
+            line += f" — {result.description}"
+        print(line)
 
 
 def run_download(
