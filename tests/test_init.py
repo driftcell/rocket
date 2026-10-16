@@ -11,7 +11,7 @@ from rocket.cli import main
 from rocket.config import load_config
 from rocket.http_client import HTTPClient
 from rocket.recommend import recommend_plugins
-from rocket.wizard import INIT_USER_AGENT, build_config_text, run_init
+from rocket.wizard import build_config_text, run_init
 
 from .helpers import (
     FILL_PROJECTS_URL,
@@ -193,16 +193,11 @@ def test_init_wizard_writes_expected_config(tmp_path: Path, capsys) -> None:
     )
 
     assert code == 0
-    expected = f"""schema_version = 1
+    expected = """schema_version = 1
 
 [paper]
 version = "1.21.11"
 channel = "STABLE"
-
-[http]
-user_agent = "{INIT_USER_AGENT}"
-timeout_seconds = 30
-retries = 3
 
 [download]
 output_dir = "./artifacts"

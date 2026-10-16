@@ -76,9 +76,6 @@ schema_version = 1
 [paper]
 version = "26.1.2"
 
-[http]
-user_agent = "rocket/0.1 (you@example.com)"   # must be replaced with real contact info
-
 [plugins.viaversion]
 provider = "hangar"
 project = "ViaVersion/ViaVersion"
@@ -155,9 +152,9 @@ rocket remove luckperms
   on disk. Both commands rewrite only the plugin section and leave the rest of the file —
   comments and hand-written formatting included — untouched.
 
-The generated file pins exact versions and uses `rocket/0.4.0 (https://github.com/driftcell/rocket)`
-as `http.user_agent`; replace the contact with your own email or project URL if you prefer. An
-existing file is never overwritten without `--force`. Example run:
+The generated file pins exact versions and no longer needs an `[http]` section: requests identify
+as `rocket/0.4.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
+own email or project URL if you prefer. An existing file is never overwritten without `--force`. Example run:
 
 ```text
 Server type: Paper
@@ -201,7 +198,7 @@ uv run --project rocket python -m rocket download --config server.toml
 | `paper.version` | required string, exact release version (not a version group, not a float) |
 | `paper.channel` | optional, default `STABLE`; this version only accepts `STABLE` |
 | `paper.build` | optional positive integer; when set, downloads exactly that stable build with no fallback |
-| `http.user_agent` | required string identifying the software with a real contact email or project URL |
+| `http.user_agent` | optional string identifying the software with a contact email or project URL; defaults to `rocket/<version>` plus the rocket project URL |
 | `http.timeout_seconds` | optional positive number, default `30` |
 | `http.retries` | optional non-negative integer, default `3` (at most 3 retries after the first attempt) |
 | `download.output_dir` | optional string, default `./artifacts`; relative paths are resolved against the config file's directory |
@@ -347,8 +344,8 @@ a pull request can only be merged once they pass.
 
 ## Live network smoke test (optional)
 
-Before making real requests, replace the placeholder contact in `http.user_agent` with a real contact
-email or project URL (Fill requires a User-Agent that identifies the software and includes contact info):
+`server.example.toml` relies on the default User-Agent (`rocket/<version>` plus the project URL);
+uncomment its `[http]` section to send your own contact info instead:
 
 ```bash
 cd rocket

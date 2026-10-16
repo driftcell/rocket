@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from rocket import USER_AGENT
 from rocket.config import load_config
 from rocket.errors import ConfigError
 from rocket.models import ResolverChoice
@@ -133,18 +134,19 @@ def test_missing_paper_section(tmp_path: Path) -> None:
     assert "paper" in excinfo.value.message
 
 
-def test_missing_http_section(tmp_path: Path) -> None:
+def test_missing_http_section_uses_defaults(tmp_path: Path) -> None:
     text = MINIMAL.replace(f'[http]\nuser_agent = "{TEST_USER_AGENT}"\n', "")
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(write_config(tmp_path, text))
-    assert "http" in excinfo.value.message
+    config = load_config(write_config(tmp_path, text))
+    assert config.http.user_agent == USER_AGENT
+    assert config.http.timeout_seconds == 30.0
+    assert config.http.retries == 3
+    assert config.warnings == ()
 
 
-def test_missing_user_agent(tmp_path: Path) -> None:
+def test_missing_user_agent_uses_the_default(tmp_path: Path) -> None:
     text = MINIMAL.replace(f'user_agent = "{TEST_USER_AGENT}"\n', "")
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(write_config(tmp_path, text))
-    assert "http.user_agent" in excinfo.value.message
+    config = load_config(write_config(tmp_path, text))
+    assert config.http.user_agent == USER_AGENT
 
 
 def test_user_agent_must_be_string(tmp_path: Path) -> None:
