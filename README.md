@@ -1,5 +1,7 @@
 # rocket
 
+[![CI](https://github.com/driftcell/rocket/actions/workflows/ci.yml/badge.svg)](https://github.com/driftcell/rocket/actions/workflows/ci.yml)
+
 A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
@@ -230,9 +232,13 @@ memory); all test data is fictional:
 ```bash
 cd rocket
 uv run pytest
+uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 ```
+
+The same commands run in CI (`.github/workflows/ci.yml`) on every pull request and push to `main`;
+a pull request can only be merged once they pass.
 
 ## Live network smoke test (optional)
 
