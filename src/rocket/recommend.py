@@ -130,6 +130,49 @@ def recommend_plugins(
     return RecommendationResult(plugins=tuple(resolved), skipped=tuple(skipped))
 
 
+def recommend_plugin(
+    provider: str,
+    project: str,
+    *,
+    asset: str | None,
+    minecraft_version: str,
+    http: HTTPClient,
+) -> RecommendedPlugin:
+    """Resolve the newest usable version of one ad-hoc plugin (used by ``rocket add``).
+
+    Unlike :func:`recommend_plugins`, a resolution failure is raised, not skipped.
+    """
+    entry = CatalogPlugin(
+        id="plugin",
+        name=project,
+        description="",
+        provider=provider,
+        project=project,
+        assets=(asset,) if asset is not None else (),
+    )
+    if provider == "hangar":
+        resolved, skipped = _recommend_hangar_group(
+            (entry,),
+            minecraft_version=minecraft_version,
+            http=http,
+            github=GitHubClient(http),
+        )
+        if resolved:
+            return resolved[0]
+        raise ProviderError(skipped[0].reason)
+    if provider == "github":
+        outcome = _recommend_github_plugin(entry, github=GitHubClient(http))
+    elif provider == "modrinth":
+        outcome = _recommend_modrinth_plugin(
+            entry, modrinth=ModrinthClient(http), minecraft_version=minecraft_version
+        )
+    else:
+        raise ProviderError(f"unsupported provider {provider!r}")
+    if isinstance(outcome, SkippedPlugin):
+        raise ProviderError(outcome.reason)
+    return outcome
+
+
 # ---------------------------------------------------------------------------
 # Hangar
 # ---------------------------------------------------------------------------
@@ -154,19 +197,31 @@ def _recommend_hangar_group(
     download_url = paper_download.get("downloadUrl")
     external_url = paper_download.get("externalUrl")
     if isinstance(download_url, str) and download_url:
+        file_info = paper_download.get("fileInfo")
+        hosted_name = file_info.get("name") if isinstance(file_info, dict) else None
         resolved: list[RecommendedPlugin] = []
         skipped: list[SkippedPlugin] = []
         for item in group:
-            if item.assets:
+            wanted = [template.replace("{version}", version) for template in item.assets]
+            hosted = hosted_name if isinstance(hosted_name, str) and hosted_name else None
+            if not wanted or hosted in wanted:
+                resolved.append(_recommended(item, version))
+            elif hosted is not None:
                 skipped.append(
                     SkippedPlugin(
                         item.id,
-                        f"Hangar hosts a single file for {project} {version}; "
-                        f"asset templates do not apply",
+                        f"asset does not match the Hangar hosted filename {hosted!r} "
+                        f"for {project} {version}",
                     )
                 )
             else:
-                resolved.append(_recommended(item, version))
+                skipped.append(
+                    SkippedPlugin(
+                        item.id,
+                        f"asset is declared but Hangar provided no hosted filename "
+                        f"to verify for {project} {version}",
+                    )
+                )
         return resolved, skipped
 
     if isinstance(external_url, str) and external_url:
@@ -336,7 +391,7 @@ def _release_asset_name(
             raise ProviderError(
                 f"release {release.owner}/{release.repo}@{release.tag} has multiple JAR "
                 f"attachments; cannot choose",
-                hint=f"add an asset template for this catalog entry: {_summarize(jars)}",
+                hint=f"declare asset with the exact upstream filename: {_summarize(jars)}",
             )
         else:
             raise ProviderError(
@@ -366,7 +421,8 @@ def _recommend_modrinth_plugin(
         version = _pick_modrinth_version(
             modrinth, plugin.project, minecraft_version=minecraft_version
         )
-        file = select_file(version, selector=None)
+        selector = plugin.assets[0] if plugin.assets else None
+        file = select_file(version, selector=selector)
     except RocketError as exc:
         return SkippedPlugin(plugin.id, exc.message)
     note = ""

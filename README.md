@@ -8,12 +8,13 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 - Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
 - Finds plugins on Hangar and Modrinth by keyword (`rocket search`);
+- Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
 - Writes a `rocket.lock` pinning the resolved Paper build and plugin artifacts, reused by later runs.
 
-**Scope of this iteration**: declare a version (or let `rocket init` write the initial config) →
-resolve artifacts → download and verify correctly, with `rocket.lock` pinning what was resolved.
+**Scope of this iteration**: declare a version (or let `rocket init`/`rocket add` pick and pin one)
+→ resolve artifacts → download and verify correctly, with `rocket.lock` pinning what was resolved.
 No long-running service/automatic restart, automatic version upgrades, or automatic dependency
 installation.
 
@@ -118,10 +119,32 @@ $ rocket search luckperms
   modrinth:lpc-chat                      LPC Minimessage - Chat Formatter — A chat formatting plugin
 ```
 
-Each line starts with the `provider:project` pair that goes into `plugins.<id>.project` when adding
-the plugin to `server.toml` by hand. The command needs no config file; when one provider is
-unreachable the other's results are still printed and the exit code is `1`. An empty result list is
-not an error.
+Each line starts with the `provider:project` pair accepted by `rocket add`. The command needs no
+config file; when one provider is unreachable the other's results are still printed and the exit
+code is `1`. An empty result list is not an error.
+
+## Adding and removing plugins (`rocket add` / `rocket remove`)
+
+`rocket add` appends a `[plugins.<id>]` section to `server.toml` — hand-editing TOML is no longer
+needed to try a plugin:
+
+```bash
+rocket add modrinth:luckperms            # resolve and pin the newest usable version
+rocket add hangar:ViaVersion/ViaVersion --version 5.12.1   # pin an exact version
+rocket add github:Zrips/Residence --id residence
+rocket remove luckperms
+```
+
+- The spec is `<provider>:<project>`: a Modrinth slug, or `owner/name` for Hangar and GitHub.
+- Without `--version`, the newest version the download pipeline can use exactly is resolved for the
+  configured `paper.version` and pinned (the same rules `rocket init` applies). With `--version`,
+  the exact version is verified against the provider before anything is written, so a typo fails
+  fast with the same error a download would produce.
+- `--asset` selects the upstream file when a release has several JARs; `--id` overrides the local
+  plugin id (derived from the project name otherwise, lowercased, dots become hyphens).
+- `rocket remove <id>` deletes the section; the downloaded JAR under `artifacts/plugins/` is kept
+  on disk. Both commands rewrite only the plugin section and leave the rest of the file —
+  comments and hand-written formatting included — untouched.
 
 The generated file pins exact versions and uses `rocket/0.2.0 (https://github.com/driftcell/rocket)`
 as `http.user_agent`; replace the contact with your own email or project URL if you prefer. An
@@ -339,21 +362,23 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
   validated and the actual SHA-256 is printed.
 - Metadata compatibility checks (Hangar `platformDependencies.PAPER` exactly containing the target
   version) are no substitute for actually starting the server.
-- `rocket init` resolves recommendations once, at init time: the generated file pins exact
-  versions, and later upstream changes do not affect it; GitHub-sourced plugins get the newest
-  release with a usable JAR attachment because GitHub provides no Minecraft compatibility data.
+- `rocket init` and `rocket add` (without `--version`) resolve recommendations once, at the moment
+  they run: the written config pins exact versions, and later upstream changes do not affect it;
+  GitHub-sourced plugins get the newest release with a usable JAR attachment because GitHub
+  provides no Minecraft compatibility data.
 
 ## Code layout
 
 ```
 src/rocket/
   __main__.py     python -m rocket entry point
-  cli.py          download/init/search subcommands, per-item results, exit codes
+  cli.py          download/init/search/add/remove subcommands, per-item results, exit codes
   wizard.py       init: interactive prompts, recommendations and server.toml output
   catalog.py      init: curated default plugin catalog
-  recommend.py    init: newest usable version per catalog entry
+  recommend.py    init/add: newest usable version per plugin
   console.py      shared styling and error-printing helpers
   config.py       server.toml parsing and strict validation
+  config_edit.py  add/remove: textual [plugins.<id>] section edits with round-trip checks
   models.py       shared models (entry/Release/Artifact/result)
   providers.py    Fill (Paper), Hangar, GitHub providers
   resolvers.py    Direct / GitHubRelease resolvers and auto selection

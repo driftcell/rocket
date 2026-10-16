@@ -14,7 +14,8 @@ from pathlib import Path
 import httpx
 
 from . import USER_AGENT, __version__
-from .config import Config, PluginConfig, load_config
+from .config import Config, PluginConfig, is_valid_plugin_id, load_config
+from .config_edit import add_plugin_section, remove_plugin_section
 from .console import install_logging, print_error, remove_logging, style
 from .context import PipelineContext
 from .downloader import HTTPDownloader
@@ -25,7 +26,7 @@ from .errors import (
     LockError,
     RocketError,
 )
-from .github import GitHubClient
+from .github import GitHubClient, parse_project
 from .http_client import HTTPClient
 from .lockfile import LOCK_FILENAME, LockData, LockedEntry, load_lock, write_lock
 from .models import (
@@ -38,8 +39,9 @@ from .models import (
     SearchResult,
     Status,
 )
-from .modrinth import ModrinthClient
+from .modrinth import ModrinthClient, parse_slug
 from .providers import PROVIDERS, FillPaperProvider, search_hangar_projects
+from .recommend import recommend_plugin
 from .resolvers import select_resolver
 from .wizard import Prompter, run_init
 
@@ -118,6 +120,47 @@ def main(
         "query",
         help="search keywords, e.g. 'luckperms'",
     )
+    add_parser = subparsers.add_parser(
+        "add",
+        help="Add a plugin to server.toml",
+    )
+    add_parser.add_argument(
+        "spec",
+        help="plugin coordinates: <provider>:<project>, e.g. modrinth:luckperms "
+        "or hangar:ViaVersion/ViaVersion",
+    )
+    add_parser.add_argument(
+        "--config",
+        default="server.toml",
+        help="path to the config file (default: ./server.toml)",
+    )
+    add_parser.add_argument(
+        "--version",
+        help="exact version to pin; the newest usable version is resolved when omitted",
+    )
+    add_parser.add_argument(
+        "--asset",
+        help="exact upstream filename, needed when a release has multiple files",
+    )
+    add_parser.add_argument(
+        "--id",
+        dest="plugin_id",
+        help="local plugin id (default: derived from the project name)",
+    )
+    remove_parser = subparsers.add_parser(
+        "remove",
+        help="Remove a plugin from server.toml",
+    )
+    remove_parser.add_argument(
+        "plugin_id",
+        metavar="id",
+        help="the plugin id to remove",
+    )
+    remove_parser.add_argument(
+        "--config",
+        default="server.toml",
+        help="path to the config file (default: ./server.toml)",
+    )
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(
@@ -129,6 +172,18 @@ def main(
         )
     if args.command == "search":
         return run_search(args.query, transport=transport, sleep=sleep)
+    if args.command == "add":
+        return run_add(
+            args.spec,
+            version=args.version,
+            asset=args.asset,
+            plugin_id=args.plugin_id,
+            config_path=Path(args.config),
+            transport=transport,
+            sleep=sleep,
+        )
+    if args.command == "remove":
+        return run_remove(args.plugin_id, config_path=Path(args.config))
     return run_download(
         Path(args.config),
         transport=transport,
@@ -196,6 +251,259 @@ def _print_search_results(results: list[SearchResult]) -> None:
         if result.description:
             line += f" — {result.description}"
         print(line)
+
+
+def run_add(
+    spec: str,
+    *,
+    version: str | None,
+    asset: str | None,
+    plugin_id: str | None,
+    config_path: Path,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Add a plugin entry to server.toml; return the exit code (0 added, 1 failed, 2 config).
+
+    ``transport``/``sleep`` are only for test injection.
+    """
+    handler = install_logging()
+    try:
+        return _run_add(
+            spec,
+            version=version,
+            asset=asset,
+            plugin_id=plugin_id,
+            config_path=config_path,
+            transport=transport,
+            sleep=sleep,
+        )
+    finally:
+        remove_logging(handler)
+
+
+def _run_add(
+    spec: str,
+    *,
+    version: str | None,
+    asset: str | None,
+    plugin_id: str | None,
+    config_path: Path,
+    transport: httpx.BaseTransport | None,
+    sleep: Callable[[float], None],
+) -> int:
+    try:
+        provider, project = _parse_add_spec(spec)
+        plugin_id = _add_plugin_id(plugin_id, project)
+        _check_add_option("version", version)
+        _check_add_option("asset", asset)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return EXIT_FAILURE
+    try:
+        config = load_config(config_path)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    if any(plugin.id == plugin_id for plugin in config.plugins):
+        print_error(
+            f"plugin id {plugin_id!r} already exists in {config.path}",
+            hint="pass --id to use a different id, or run rocket remove first",
+        )
+        return EXIT_FAILURE
+    try:
+        with HTTPClient(
+            user_agent=config.http.user_agent,
+            timeout_seconds=config.http.timeout_seconds,
+            retries=config.http.retries,
+            transport=transport,
+            sleep=sleep,
+            github_token=os.environ.get("GITHUB_TOKEN"),
+        ) as http:
+            if version is None:
+                resolved = _resolve_add_auto(
+                    config,
+                    http,
+                    plugin_id=plugin_id,
+                    provider=provider,
+                    project=project,
+                    asset=asset,
+                )
+            else:
+                _verify_add_version(
+                    config,
+                    http,
+                    plugin_id=plugin_id,
+                    provider=provider,
+                    project=project,
+                    version=version,
+                    asset=asset,
+                )
+                resolved = (version, asset)
+        resolved_version, resolved_asset = resolved
+        add_plugin_section(
+            config.path,
+            plugin_id=plugin_id,
+            provider=provider,
+            project=project,
+            version=resolved_version,
+            asset=resolved_asset,
+        )
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    print(f"added {plugin_id} {resolved_version} ({provider})")
+    _print_next_download(config_path)
+    return EXIT_OK
+
+
+def _parse_add_spec(spec: str) -> tuple[str, str]:
+    """Split ``<provider>:<project>`` and validate both halves before any network request."""
+    provider, separator, project = spec.partition(":")
+    if not separator or not provider or not project:
+        raise RocketError(
+            f"invalid plugin spec: {spec!r}",
+            hint="use <provider>:<project>, e.g. modrinth:luckperms "
+            "or hangar:ViaVersion/ViaVersion",
+        )
+    if provider not in PROVIDERS:
+        raise RocketError(
+            f"unknown provider: {provider!r}",
+            hint=f"available providers: {', '.join(PROVIDERS)}",
+        )
+    if provider == "modrinth":
+        project = parse_slug(project, field_path="spec")
+    else:
+        parse_project(project, field_path="spec")
+    return provider, project
+
+
+def _add_plugin_id(plugin_id: str | None, project: str) -> str:
+    if plugin_id is not None:
+        if not is_valid_plugin_id(plugin_id):
+            raise RocketError(
+                f"invalid plugin id: {plugin_id!r}",
+                hint="ids may only contain lowercase letters, digits, underscores and hyphens",
+            )
+        return plugin_id
+    candidate = project.rsplit("/", 1)[-1].lower().replace(".", "-")
+    if not is_valid_plugin_id(candidate):
+        raise RocketError(
+            f"cannot derive a plugin id from {project!r}",
+            hint="pass --id explicitly",
+        )
+    return candidate
+
+
+def _check_add_option(name: str, value: str | None) -> None:
+    if value is not None and not value.strip():
+        raise RocketError(f"--{name} must not be empty")
+
+
+def _resolve_add_auto(
+    config: Config,
+    http: HTTPClient,
+    *,
+    plugin_id: str,
+    provider: str,
+    project: str,
+    asset: str | None,
+) -> tuple[str, str | None]:
+    """Pick the newest usable version (and asset) and pin it, like rocket init does."""
+    picked = recommend_plugin(
+        provider,
+        project,
+        asset=asset,
+        minecraft_version=config.paper.version,
+        http=http,
+    )
+    if picked.note:
+        _log.warning("[%s] warning: %s", plugin_id, picked.note)
+    return picked.version, picked.asset
+
+
+def _verify_add_version(
+    config: Config,
+    http: HTTPClient,
+    *,
+    plugin_id: str,
+    provider: str,
+    project: str,
+    version: str,
+    asset: str | None,
+) -> None:
+    """Fail fast when the declared exact version cannot be resolved by the download pipeline."""
+    plugin = PluginConfig(
+        id=plugin_id,
+        provider=provider,
+        project=project,
+        version=version,
+        asset=asset,
+        platform=config.plugin_defaults.platform,
+        follow_external=config.plugin_defaults.follow_external,
+    )
+    context = PipelineContext(
+        http=http,
+        github=GitHubClient(http),
+        modrinth=ModrinthClient(http),
+        minecraft_version=config.paper.version,
+        output_dir=config.download.output_dir,
+        log=_log,
+    )
+    item = _Item(
+        id=plugin_id,
+        kind=ArtifactKind.PLUGIN,
+        follow_external=plugin.follow_external,
+        plugin=plugin,
+    )
+    _resolve_artifact(item, config, context)
+
+
+def run_remove(plugin_id: str, *, config_path: Path) -> int:
+    """Remove a plugin entry from server.toml; return the exit code (0 removed, 1 failed)."""
+    handler = install_logging()
+    try:
+        return _run_remove(plugin_id, config_path=config_path)
+    finally:
+        remove_logging(handler)
+
+
+def _run_remove(plugin_id: str, *, config_path: Path) -> int:
+    if not is_valid_plugin_id(plugin_id):
+        print_error(
+            f"invalid plugin id: {plugin_id!r}",
+            hint="ids may only contain lowercase letters, digits, underscores and hyphens",
+        )
+        return EXIT_FAILURE
+    try:
+        config = load_config(config_path)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    if not any(plugin.id == plugin_id for plugin in config.plugins):
+        known = ", ".join(plugin.id for plugin in config.plugins) or "(none)"
+        print_error(
+            f"plugin {plugin_id!r} is not defined in {config.path}",
+            hint=f"known plugin ids: {known}",
+        )
+        return EXIT_FAILURE
+    try:
+        remove_plugin_section(config.path, plugin_id)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    print(f"removed {plugin_id}")
+    jar = config.download.output_dir / "plugins" / f"{plugin_id}.jar"
+    if jar.is_file():
+        print(f"note: {jar} was kept on disk")
+    return EXIT_OK
+
+
+def _print_next_download(config_path: Path) -> None:
+    if config_path == Path("server.toml"):
+        print("next: rocket download")
+    else:
+        print(f"next: rocket download --config {config_path}")
 
 
 def run_download(
