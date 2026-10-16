@@ -6,20 +6,23 @@ import argparse
 import logging
 import os
 import re
-import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from blessed import Terminal
 
 from . import USER_AGENT, __version__
 from .config import Config, PluginConfig, is_valid_plugin_id, load_config
 from .config_edit import add_plugin_section, remove_plugin_section
-from .console import install_logging, print_error, remove_logging, style
+from .console import install_logging, print_error, remove_logging, terminal
 from .context import PipelineContext
 from .downloader import HTTPDownloader
 from .errors import (
@@ -260,9 +263,7 @@ def _print_search_results(results: list[SearchResult]) -> None:
     the name is a cmd+clickable link to the project page (OSC 8) and descriptions are
     truncated to the terminal width; off a TTY everything degrades to plain text.
     """
-    from blessed import Terminal  # lazy import, like questionary: plain runs stay fast
-
-    term = Terminal(stream=sys.stdout)
+    term = terminal()
     ordered = sorted(
         results, key=lambda result: (result.downloads is None, -(result.downloads or 0))
     )
@@ -663,9 +664,12 @@ def _run_download(
 
     downloaded = sum(1 for result in entries if result.status is Status.DOWNLOADED)
     unchanged = len(entries) - downloaded
-    _print_run_summary(resolved, downloaded, unchanged, resolve_seconds, download_seconds)
+    term = terminal()
+    _print_run_summary(
+        resolved, downloaded, unchanged, resolve_seconds, download_seconds, term=term
+    )
     for result in entries:
-        _print_item_result(result, verbose=verbose)
+        _print_item_result(result, verbose=verbose, term=term)
     return EXIT_FAILURE if failures else EXIT_OK
 
 
@@ -890,18 +894,23 @@ def _print_run_summary(
     unchanged: int,
     resolve_seconds: float,
     download_seconds: float,
+    *,
+    term: Terminal,
 ) -> None:
     if resolved:
-        print(_phase_line(f"Resolved {_plural(resolved, 'item')}", resolve_seconds))
+        print(_phase_line(f"Resolved {_plural(resolved, 'item')}", resolve_seconds, term=term))
     if downloaded:
         tail = f" ({unchanged} unchanged)" if unchanged else ""
-        print(_phase_line(f"Downloaded {_plural(downloaded, 'item')}", download_seconds) + tail)
+        print(
+            _phase_line(f"Downloaded {_plural(downloaded, 'item')}", download_seconds, term=term)
+            + tail
+        )
     elif unchanged:
-        print(_phase_line(f"Audited {_plural(unchanged, 'item')}", download_seconds))
+        print(_phase_line(f"Audited {_plural(unchanged, 'item')}", download_seconds, term=term))
 
 
-def _phase_line(text: str, seconds: float) -> str:
-    return f"{text} in {style(_format_duration(seconds), '2', stream=sys.stdout)}"
+def _phase_line(text: str, seconds: float, *, term: Terminal) -> str:
+    return f"{text} in {term.dim(_format_duration(seconds))}"
 
 
 def _plural(count: int, noun: str) -> str:
@@ -940,24 +949,22 @@ def _format_count(value: int) -> str:
     return f"{value / 1_000_000_000:.1f}G"
 
 
-def _print_item_result(result: DownloadResult, *, verbose: bool) -> None:
+def _print_item_result(result: DownloadResult, *, verbose: bool, term: Terminal) -> None:
     downloaded = result.status is Status.DOWNLOADED
     if downloaded:
-        print(_format_item_line(result, downloaded=True))
+        print(_format_item_line(result, downloaded=True, term=term))
     elif verbose:
-        print(_format_item_line(result, downloaded=False))
+        print(_format_item_line(result, downloaded=False, term=term))
     if verbose:
-        print(style(_format_item_detail(result), "2", stream=sys.stdout))
+        print(term.dim(_format_item_detail(result)))
 
 
-def _format_item_line(result: DownloadResult, *, downloaded: bool) -> str:
+def _format_item_line(result: DownloadResult, *, downloaded: bool, term: Terminal) -> str:
     version = result.version
     if result.detail:
         version = f"{version} {result.detail}"
     chain = " → ".join(result.source_chain)
-    marker = (
-        style("+", "32", stream=sys.stdout) if downloaded else style("=", "2", stream=sys.stdout)
-    )
+    marker = term.green("+") if downloaded else term.dim("=")
     return f" {marker} {result.target.name} ({version}, {chain})"
 
 
