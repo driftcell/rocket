@@ -7,7 +7,8 @@ description: Ship a new version of the rocket CLI — bump every version referen
 
 Nothing here is automatic: every user-visible change must be followed by a version bump and a
 GitHub release. The `protect-main` ruleset blocks direct pushes, so all steps go through a PR,
-and merges are squash-only.
+and merges are squash-only. Merging requires the user's explicit approval — never merge a PR
+on your own.
 
 ## When a release is due
 
@@ -47,7 +48,8 @@ jj bookmark create release-vX.Y.Z -r @
 jj git push -b release-vX.Y.Z
 gh pr create --base main --head release-vX.Y.Z --title "Release X.Y.Z" --body "…"
 gh pr checks <PR> --watch
-gh pr merge <PR> --squash --delete-branch
+# STOP here: report the PR and wait for the user's explicit approval before merging
+gh pr merge <PR> --squash --delete-branch   # only after the user approves
 ```
 
 Then sync jj (the local `main` bookmark fast-forwards automatically; the old working-copy

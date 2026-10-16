@@ -1,0 +1,74 @@
+# rocket agent guidelines
+
+## Python coding guidelines
+
+* Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless
+  otherwise specified.
+* Comments explain "why", not "what": do not write comments that summarize the code. Docstrings
+  state contracts, concisely.
+* Prefer implementing functionality in existing files unless it is a new logical component.
+  Avoid creating many small files.
+* Never silently discard errors. No bare `except:` and no `except Exception: pass`; raise a
+  `RocketError` subclass with an actionable hint instead. The only broad `except Exception` is
+  the per-item failure isolation in `cli.py`/`wizard.py`, which must still report the problem
+  to the user.
+* Guard upstream data explicitly: validate structure and raise a `RocketError` with a hint
+  instead of relying on assertions or letting `KeyError`/`IndexError`/`TypeError` escape.
+  Assertions belong in tests.
+* CLI conventions: failures print `error: <message> (hint: ...)` to stderr; exit codes are
+  0 success, 1 failures, 2 invalid config.
+* Avoid creative additions unless explicitly requested: no new dependencies, commands, flags
+  or config fields without asking first.
+* Use full words for variable names (no abbreviations like `q` for `queue`).
+
+## Project invariants (traps to avoid)
+
+* Exact versions only: the download pipeline never resolves "latest", never accepts version
+  ranges and never selects a version automatically. Only `rocket init` picks versions (and
+  pins what it resolved), and `--upgrade` re-resolves locked items.
+* Never invent download URLs and never treat an arbitrary web page as a JAR. External entries
+  may only follow fixed-tag GitHub Release pages; failing with a hint is the correct behavior.
+* Strict config validation is a feature: unknown fields, unknown providers and unknown
+  resolvers are errors. Do not relax validation to be "friendly".
+* Tests are fully offline (`httpx.MockTransport`/`FakeAPI`, temporary directories, fictional
+  data). Never hit the network in tests and never weaken assertions just to make the suite pass.
+* `uv.lock` must stay in sync; CI runs `uv sync --locked`.
+* Downloads are validated (size, upstream hash when available, ZIP/JAR structure) before the
+  atomic replace. Do not soften or skip validation.
+
+## Workflow
+
+* Run the four gates locally before every push: `uv run ruff format --check .`,
+  `uv run ruff check .`, `uv run ty check`, `uv run pytest -q`.
+* `main` is protected (ruleset `protect-main`): no direct pushes, required status checks
+  `lint` + `test`, linear history, squash-only merges. Every change goes through a pull
+  request — even one-line fixes.
+* Git conventions in this colocated jj workspace: commits and bookmarks via `jj`, tags via `git`.
+* HARD RULE: never merge a pull request on your own. Open the PR, report it, and wait for the
+  user's explicit approval before running `gh pr merge` (the user may also merge it themselves).
+* After user-visible changes merge, a release is due — follow `.agents/skills/release/SKILL.md`.
+
+## PR hygiene
+
+* Use a clear, correctly capitalized, imperative PR title (for example, `Add release skill`).
+* Avoid conventional commit prefixes (`fix:`, `feat:`, ...) and trailing punctuation in titles.
+* End the PR body with a `Release Notes:` section containing exactly one bullet:
+  * `- Added ...`, `- Fixed ...` or `- Improved ...` for user-facing changes, or
+  * `- N/A` for tooling-only or docs-only changes.
+* Format it with a blank line after the heading:
+
+```
+Release Notes:
+
+- N/A
+```
+
+## Rules hygiene
+
+* Every agent session reads this file; keep it high-signal.
+* A rule must be non-obvious, repeatedly encountered and specific enough to act on. No
+  architectural descriptions (module layout, data flow) — they go stale. This file holds
+  traps to avoid, not maps to follow.
+* Do not bundle rules edits into feature work: note proposed additions in a "Suggested rules
+  additions" section of the PR body. Rules changes land in dedicated commits after the user
+  approves them.
