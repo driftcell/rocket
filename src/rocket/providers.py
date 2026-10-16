@@ -1,7 +1,13 @@
-"""Providers: Fill (Paper), Hangar, GitHub.
+"""Providers: Fill (Paper), Hangar, GitHub, Modrinth.
 
 Scope: query the declared project and exact version; return download entries and metadata;
 never treat an arbitrary web page as a JAR and never select other versions.
+
+Every plugin provider implements the trait surface declared on :class:`PluginProvider` —
+coordinate validation, exact-version resolution, keyword search, newest-version
+recommendation and the pin catalogs — and registers in ``PROVIDERS``. The CLI dispatches
+through the registry and keeps no per-provider branches, so a new provider is a new class
+here plus one registry entry.
 """
 
 from __future__ import annotations
@@ -10,10 +16,18 @@ import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from .catalog import version_forms
 from .config import PaperConfig, PluginConfig
-from .context import PipelineContext
-from .errors import HTTPStatusError, ProviderError
-from .github import parse_project
+from .context import PipelineContext, ProviderClients
+from .errors import HTTPStatusError, ProviderError, RocketError
+from .github import (
+    GitHubRelease,
+    release_asset_name,
+    release_for_external_link,
+)
+from .github import (
+    parse_project as _parse_owner_name,
+)
 from .http_client import HTTPClient
 from .models import (
     ArtifactKind,
@@ -22,25 +36,85 @@ from .models import (
     DownloadEntry,
     EntryKind,
     GitHubCoordinates,
+    RecommendedPlugin,
     ReleaseInfo,
     SearchResult,
 )
-from .modrinth import check_loaders, parse_slug, select_file, select_version
+from .modrinth import (
+    PAPER_LOADERS,
+    ModrinthFile,
+    ModrinthVersion,
+    check_loaders,
+    parse_slug,
+    select_file,
+    select_version,
+)
 
 _FILL_BASE = "https://fill.papermc.io/v3"
 _HANGAR_BASE = "https://hangar.papermc.io/api/v1"
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
+_HANGAR_VERSION_LIMIT = 10
+_PIN_CATALOG_LIMIT = 30  # select prompts stay navigable
+_GITHUB_NOTE = "GitHub Releases provide no Minecraft compatibility info (treated as unknown)"
+
 
 class PluginProvider:
-    """Base class for plugin providers."""
+    """Base class for plugin providers: the full operation surface the CLI dispatches on.
+
+    Instance methods share the per-run clients; the staticmethods are pure and need no
+    client. The remaining provider asymmetry is declared as capabilities, not hidden in
+    call-site branches: ``supports_search`` marks keyword search, and ``upgrade_note``
+    marks pins that ``rocket upgrade`` does not check (the note is printed instead).
+    """
 
     name = "plugin"
+    supports_search = False
+    upgrade_note: str | None = None
 
-    def __init__(self, context: PipelineContext) -> None:
+    def __init__(self, context: ProviderClients) -> None:
         self.context = context
 
-    def resolve(self, spec: PluginConfig) -> ReleaseInfo:
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        """Validate the project coordinate; return its canonical form."""
+        raise NotImplementedError
+
+    @staticmethod
+    def page_url(project: str) -> str:
+        """Public project page linked from search output (searchable providers only)."""
+        raise NotImplementedError
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
+        """Resolve the declared exact version to a download entry."""
+        raise NotImplementedError
+
+    def search(self, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+        """Search projects by keyword, most downloaded first."""
+        raise NotImplementedError
+
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        """Pick the newest version the download pipeline can use exactly, and pin it.
+
+        ``templates`` holds ``{version}`` filename templates for sources where the exact
+        attachment has to be picked from a release page.
+        """
+        raise NotImplementedError
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """(version, detail) pairs usable with the target Minecraft version, newest first."""
+        raise NotImplementedError
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        """(asset, choices) for one exact version: a unique JAR is used directly, several
+        JARs are returned as choices, sources with unnamed files pin no asset."""
         raise NotImplementedError
 
 
@@ -248,16 +322,32 @@ class HangarProvider(PluginProvider):
     """Hangar API v1."""
 
     name = "hangar"
+    supports_search = True
 
-    def resolve(self, spec: PluginConfig) -> ReleaseInfo:
-        owner, slug = parse_project(spec.project, field_path=f"plugins.{spec.id}.project")
+    def __init__(self, context: ProviderClients) -> None:
+        super().__init__(context)
+        # a project shared by several catalog entries (the EssentialsX module group)
+        # is resolved only once per run, failures included
+        self._recommended: dict[str, tuple[str, dict[str, Any]] | RocketError] = {}
+
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        _parse_owner_name(project, field_path=field_path)
+        return project
+
+    @staticmethod
+    def page_url(project: str) -> str:
+        return f"https://hangar.papermc.io/{project}"
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
+        owner, slug = _parse_owner_name(spec.project, field_path=f"plugins.{spec.id}.project")
         self._verify_namespace(spec, owner=owner, slug=slug)
         version = self._fetch_version(spec, slug)
         entry = self._select_entry(spec, version)
         compatibility, note = _check_platform_dependencies(
             version,
             platform=spec.platform,
-            minecraft_version=self.context.minecraft_version,
+            minecraft_version=minecraft_version,
         )
         if compatibility is Compatibility.UNKNOWN:
             self.context.log.warning("[%s] warning: %s", spec.id, note)
@@ -282,6 +372,248 @@ class HangarProvider(PluginProvider):
             compatibility_note=note,
             source_chain=("hangar",),
         )
+
+    def search(self, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+        params = urlencode(
+            {"query": query, "limit": str(limit), "offset": "0", "sort": "-downloads"}
+        )
+        payload = self.context.http.get_json(f"{_HANGAR_BASE}/projects?{params}")
+        if not isinstance(payload, dict):
+            raise ProviderError("Hangar search response has invalid structure (expected object)")
+        items = payload.get("result")
+        if not isinstance(items, list):
+            raise ProviderError(
+                "Hangar search response is missing the result field",
+                hint=(
+                    "the upstream response contract may have changed; "
+                    "update the adapter instead of guessing"
+                ),
+            )
+        results: list[SearchResult] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            namespace = item.get("namespace")
+            owner = namespace.get("owner") if isinstance(namespace, dict) else None
+            slug = namespace.get("slug") if isinstance(namespace, dict) else None
+            name = item.get("name")
+            if (
+                not isinstance(owner, str)
+                or not owner
+                or not isinstance(slug, str)
+                or not slug
+                or not isinstance(name, str)
+                or not name
+            ):
+                continue
+            stats = item.get("stats")
+            downloads = stats.get("downloads") if isinstance(stats, dict) else None
+            results.append(
+                SearchResult(
+                    provider=self.name,
+                    project=f"{owner}/{slug}",
+                    name=name,
+                    description=_one_line(item.get("description")),
+                    downloads=downloads if isinstance(downloads, int) else None,
+                )
+            )
+        return tuple(results)
+
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        version, paper_download = self._recommended_version(
+            project, minecraft_version=minecraft_version
+        )
+        download_url = paper_download.get("downloadUrl")
+        external_url = paper_download.get("externalUrl")
+        if isinstance(download_url, str) and download_url:
+            file_info = paper_download.get("fileInfo")
+            hosted_name = file_info.get("name") if isinstance(file_info, dict) else None
+            wanted = [template.replace("{version}", version) for template in templates]
+            hosted = hosted_name if isinstance(hosted_name, str) and hosted_name else None
+            if not wanted or hosted in wanted:
+                return RecommendedPlugin(
+                    id=plugin_id, provider=self.name, project=project, version=version
+                )
+            if hosted is not None:
+                raise ProviderError(
+                    f"asset does not match the Hangar hosted filename {hosted!r} "
+                    f"for {project} {version}"
+                )
+            raise ProviderError(
+                f"asset is declared but Hangar provided no hosted filename to verify "
+                f"for {project} {version}"
+            )
+        if isinstance(external_url, str) and external_url:
+            release = release_for_external_link(self.context.github, external_url)
+            asset = release_asset_name(release, version=version, templates=templates)
+            return RecommendedPlugin(
+                id=plugin_id,
+                provider=self.name,
+                project=project,
+                version=version,
+                asset=asset,
+            )
+        raise ProviderError(f"Hangar version {version} of {project} has no PAPER download entry")
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """(version name, channel), newest first, all channels; only versions declaring
+        the target platform version are listed."""
+        _, slug = _parse_owner_name(project, field_path="project")
+        quoted_slug = quote(slug, safe="")
+        params = urlencode(
+            {
+                "platform": "PAPER",
+                "platformVersion": minecraft_version,
+                "limit": str(_PIN_CATALOG_LIMIT),
+            }
+        )
+        payload = _hangar_get_or_not_found(
+            self.context.http,
+            f"{_HANGAR_BASE}/projects/{quoted_slug}/versions?{params}",
+            project=project,
+        )
+        if not isinstance(payload, dict):
+            raise ProviderError(f"Hangar version list has an invalid structure: {project}")
+        results = payload.get("result")
+        if not isinstance(results, list):
+            raise ProviderError(
+                f"Hangar version list is missing the result field: {project}",
+                hint=(
+                    "the upstream response contract may have changed; "
+                    "update the adapter instead of guessing"
+                ),
+            )
+        versions: list[tuple[str, str]] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            channel = _channel_name(item.get("channel"))
+            if isinstance(name, str) and name and channel is not None:
+                versions.append((name, channel))
+        if not versions:
+            raise ProviderError(
+                f"Hangar project {project} has no version for Minecraft {minecraft_version}",
+                hint="pin another Paper version first (rocket pin core), or edit the pin by hand",
+            )
+        return versions
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        """(asset, choices): a hosted file pins no asset; an external link lists the
+        attachments of the GitHub Release it points at."""
+        _, slug = _parse_owner_name(project, field_path="project")
+        quoted_slug = quote(slug, safe="")
+        detail_url = f"{_HANGAR_BASE}/projects/{quoted_slug}/versions/{quote(version, safe='')}"
+        detail = _hangar_get_or_not_found(self.context.http, detail_url, project=project)
+        if not isinstance(detail, dict):
+            raise ProviderError(
+                f"Hangar version response has an invalid structure: {project} {version}"
+            )
+        downloads = detail.get("downloads")
+        paper = downloads.get("PAPER") if isinstance(downloads, dict) else None
+        if not isinstance(paper, dict):
+            raise ProviderError(
+                f"Hangar version {version} of {project} has no PAPER download entry"
+            )
+        download_url = paper.get("downloadUrl")
+        if isinstance(download_url, str) and download_url:
+            return None, []  # a hosted file is a single choice; no asset is pinned
+        external_url = paper.get("externalUrl")
+        if isinstance(external_url, str) and external_url:
+            release = release_for_external_link(self.context.github, external_url)
+            return _file_choices(
+                [asset.name for asset in release.assets],
+                context=f"release {release.owner}/{release.repo}@{release.tag}",
+            )
+        raise ProviderError(
+            f"Hangar version {version} of {project} has no download entry "
+            "(both downloadUrl and externalUrl are empty)"
+        )
+
+    def _recommended_version(
+        self, project: str, *, minecraft_version: str
+    ) -> tuple[str, dict[str, Any]]:
+        cached = self._recommended.get(project)
+        if isinstance(cached, RocketError):
+            raise cached
+        if cached is not None:
+            return cached
+        try:
+            resolved = self._newest_release_version(project, minecraft_version=minecraft_version)
+        except RocketError as exc:
+            self._recommended[project] = exc
+            raise
+        self._recommended[project] = resolved
+        return resolved
+
+    def _newest_release_version(
+        self, project: str, *, minecraft_version: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Newest Release-channel version declaring PAPER support, plus its PAPER download
+        entry."""
+        _, slug = _parse_owner_name(project, field_path="project")
+        quoted_slug = quote(slug, safe="")
+        params = urlencode(
+            {
+                "platform": "PAPER",
+                "platformVersion": minecraft_version,
+                "channel": "Release",
+                "limit": str(_HANGAR_VERSION_LIMIT),
+            }
+        )
+        payload = _hangar_get_or_not_found(
+            self.context.http,
+            f"{_HANGAR_BASE}/projects/{quoted_slug}/versions?{params}",
+            project=project,
+        )
+        if not isinstance(payload, dict):
+            raise ProviderError(f"Hangar version list has an invalid structure: {project}")
+        results = payload.get("result")
+        if not isinstance(results, list):
+            raise ProviderError(
+                f"Hangar version list is missing the result field: {project}",
+                hint="the upstream response contract may have changed; "
+                "update the adapter instead of guessing",
+            )
+        release_names: list[str] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name and _channel_name(item.get("channel")) == "Release":
+                release_names.append(name)
+        if not release_names:
+            raise ProviderError(
+                f"Hangar project {project} has no Release-channel version for "
+                f"Minecraft {minecraft_version}",
+                hint="newer Minecraft releases are sometimes only covered by snapshot builds; "
+                "pick another Paper version or add this plugin manually",
+            )
+
+        version = release_names[0]
+        detail_url = f"{_HANGAR_BASE}/projects/{quoted_slug}/versions/{quote(version, safe='')}"
+        detail = _hangar_get_or_not_found(self.context.http, detail_url, project=project)
+        if not isinstance(detail, dict):
+            raise ProviderError(
+                f"Hangar version response has an invalid structure: {project} {version}"
+            )
+        _check_declared_platform(
+            detail, project=project, version=version, minecraft_version=minecraft_version
+        )
+        downloads = detail.get("downloads")
+        paper = downloads.get("PAPER") if isinstance(downloads, dict) else None
+        if not isinstance(paper, dict):
+            raise ProviderError(
+                f"Hangar version {version} of {project} has no PAPER download entry"
+            )
+        return version, paper
 
     def _verify_namespace(self, spec: PluginConfig, *, owner: str, slug: str) -> None:
         url = f"{_HANGAR_BASE}/projects/{quote(slug, safe='')}"
@@ -404,61 +736,21 @@ class HangarProvider(PluginProvider):
         )
 
 
-def search_hangar_projects(http: HTTPClient, query: str, *, limit: int) -> tuple[SearchResult, ...]:
-    """Search Hangar projects by keyword, most downloaded first."""
-    params = urlencode({"query": query, "limit": str(limit), "offset": "0", "sort": "-downloads"})
-    payload = http.get_json(f"{_HANGAR_BASE}/projects?{params}")
-    if not isinstance(payload, dict):
-        raise ProviderError("Hangar search response has invalid structure (expected object)")
-    items = payload.get("result")
-    if not isinstance(items, list):
-        raise ProviderError(
-            "Hangar search response is missing the result field",
-            hint=(
-                "the upstream response contract may have changed; "
-                "update the adapter instead of guessing"
-            ),
-        )
-    results: list[SearchResult] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        namespace = item.get("namespace")
-        owner = namespace.get("owner") if isinstance(namespace, dict) else None
-        slug = namespace.get("slug") if isinstance(namespace, dict) else None
-        name = item.get("name")
-        if (
-            not isinstance(owner, str)
-            or not owner
-            or not isinstance(slug, str)
-            or not slug
-            or not isinstance(name, str)
-            or not name
-        ):
-            continue
-        stats = item.get("stats")
-        downloads = stats.get("downloads") if isinstance(stats, dict) else None
-        results.append(
-            SearchResult(
-                provider="hangar",
-                project=f"{owner}/{slug}",
-                name=name,
-                description=_one_line(item.get("description")),
-                downloads=downloads if isinstance(downloads, int) else None,
-            )
-        )
-    return tuple(results)
-
-
 class GitHubProvider(PluginProvider):
     """GitHub Releases REST API (exact tag queries)."""
 
     name = "github"
+    upgrade_note = "pins an exact tag; bump it by hand or re-run rocket add"
 
-    def resolve(self, spec: PluginConfig) -> ReleaseInfo:
-        owner, repo = parse_project(spec.project, field_path=f"plugins.{spec.id}.project")
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        _parse_owner_name(project, field_path=field_path)
+        return project
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
+        owner, repo = _parse_owner_name(spec.project, field_path=f"plugins.{spec.id}.project")
         release = self.context.github.get_release(owner, repo, spec.version)
-        note = "GitHub Releases provide no Minecraft compatibility info (treated as unknown)"
+        note = _GITHUB_NOTE
         self.context.log.warning("[%s] warning: %s", spec.id, note)
         entry = DownloadEntry(
             kind=EntryKind.GITHUB_RELEASE,
@@ -480,20 +772,86 @@ class GitHubProvider(PluginProvider):
             source_chain=("github",),
         )
 
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        release, asset = self._newest_usable_release(project, templates=templates)
+        return RecommendedPlugin(
+            id=plugin_id,
+            provider=self.name,
+            project=project,
+            version=release.tag,
+            asset=asset,
+            note=_GITHUB_NOTE,
+        )
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """Release tags, newest first (drafts and prereleases excluded); GitHub has no
+        Minecraft compatibility metadata, so every release is listed."""
+        owner, repo = _parse_owner_name(project, field_path="project")
+        tags = [
+            release.tag
+            for release in self.context.github.get_releases(owner, repo)
+            if not release.draft and not release.prerelease
+        ]
+        if not tags:
+            raise ProviderError(f"GitHub project {project} has no non-prerelease releases")
+        return [(tag, "release") for tag in tags]
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        owner, repo = _parse_owner_name(project, field_path="project")
+        release = self.context.github.get_release(owner, repo, version)
+        return _file_choices(
+            [asset.name for asset in release.assets],
+            context=f"release {release.owner}/{release.repo}@{release.tag}",
+        )
+
+    def _newest_usable_release(
+        self, project: str, *, templates: tuple[str, ...]
+    ) -> tuple[GitHubRelease, str]:
+        """Newest non-draft, non-prerelease release that has the wanted JAR attachment."""
+        owner, repo = _parse_owner_name(project, field_path="project")
+        for release in self.context.github.get_releases(owner, repo):
+            if release.draft or release.prerelease:
+                continue
+            try:
+                asset = release_asset_name(release, version=release.tag, templates=templates)
+            except ProviderError:
+                continue
+            return release, asset
+        raise ProviderError(
+            f"no recent release of {project} has a usable JAR attachment",
+            hint="the newest releases were checked; add this plugin manually with an exact version",
+        )
+
 
 class ModrinthProvider(PluginProvider):
     """Modrinth API v2 (exact version_number and exact file)."""
 
     name = "modrinth"
+    supports_search = True
 
-    def resolve(self, spec: PluginConfig) -> ReleaseInfo:
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        return parse_slug(project, field_path=field_path)
+
+    @staticmethod
+    def page_url(project: str) -> str:
+        return f"https://modrinth.com/project/{project}"
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
         slug = parse_slug(spec.project, field_path=f"plugins.{spec.id}.project")
         self.context.modrinth.get_project(slug)
         versions = self.context.modrinth.get_versions(slug)
         version = select_version(
             versions,
             version_number=spec.version,
-            minecraft_version=self.context.minecraft_version,
+            minecraft_version=minecraft_version,
         )
         check_loaders(version, platform=spec.platform)
         file = select_file(version, selector=spec.asset)
@@ -531,6 +889,100 @@ class ModrinthProvider(PluginProvider):
             source_chain=("modrinth",),
         )
 
+    def search(self, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+        return self.context.modrinth.search_projects(query, limit=limit)
+
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        version = self._newest_compatible_version(project, minecraft_version=minecraft_version)
+        selector = templates[0] if templates else None
+        file = self._select_recommended_file(version, selector)
+        note = ""
+        if version.version_type != "release":
+            note = (
+                f"no stable release for Minecraft {minecraft_version}; using {version.version_type}"
+            )
+        return RecommendedPlugin(
+            id=plugin_id,
+            provider=self.name,
+            project=project,
+            version=version.version_number,
+            asset=file.filename,
+            note=note,
+        )
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """(version number, version type) usable with PAPER on the target Minecraft version."""
+        slug = parse_slug(project, field_path="project")
+        versions = self.context.modrinth.get_versions(slug)
+        compatible = [
+            (version.version_number, version.version_type)
+            for version in versions
+            if minecraft_version in version.game_versions
+            and set(version.loaders) & set(PAPER_LOADERS)
+        ]
+        if not compatible:
+            raise ProviderError(
+                f"Modrinth project {slug} has no PAPER version for Minecraft {minecraft_version}",
+                hint="pin another Paper version first (rocket pin core), or edit the pin by hand",
+            )
+        return compatible[:_PIN_CATALOG_LIMIT]
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        slug = parse_slug(project, field_path="project")
+        versions = self.context.modrinth.get_versions(slug)
+        found = next((item for item in versions if item.version_number == version), None)
+        if found is None:
+            raise ProviderError(f"Modrinth version number {version!r} does not exist: {slug!r}")
+        return _file_choices(
+            [file.filename for file in found.files], context=f"Modrinth version {version!r}"
+        )
+
+    def _newest_compatible_version(
+        self, project: str, *, minecraft_version: str
+    ) -> ModrinthVersion:
+        """Newest version listing the target game version and a paper-family loader;
+        a non-release version is used only with a note."""
+        slug = parse_slug(project, field_path="project")
+        versions = self.context.modrinth.get_versions(slug)
+        candidates = [
+            version
+            for version in versions
+            if minecraft_version in version.game_versions
+            and set(version.loaders) & set(PAPER_LOADERS)
+        ]
+        if not candidates:
+            raise ProviderError(
+                f"Modrinth project {slug} has no PAPER version for Minecraft {minecraft_version}",
+                hint="nearby Minecraft versions are not assumed equivalent; "
+                "add this plugin manually with an exact version",
+            )
+        releases = [version for version in candidates if version.version_type == "release"]
+        return releases[0] if releases else candidates[0]
+
+    @staticmethod
+    def _select_recommended_file(version: ModrinthVersion, selector: str | None) -> ModrinthFile:
+        """Templates try every filename form of the tag, then the unique-JAR rule applies.
+
+        A template derived from an old pin may match nothing (the new filenames spell the
+        version differently); then a unique JAR is still unambiguous, and several JARs fail
+        with the usual "cannot choose" listing.
+        """
+        if selector is not None and "{version}" in selector:
+            names = {file.filename for file in version.files}
+            for form in version_forms(version.version_number):
+                candidate = selector.replace("{version}", form)
+                if candidate in names:
+                    return select_file(version, selector=candidate)
+            return select_file(version, selector=None)
+        return select_file(version, selector=selector)
+
 
 PROVIDERS: dict[str, type[PluginProvider]] = {
     HangarProvider.name: HangarProvider,
@@ -539,11 +991,68 @@ PROVIDERS: dict[str, type[PluginProvider]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
 def _raise_on_api_error(payload: Any, *, context: str) -> None:
     """Fill error objects look like {"ok": false, "error": ..., "message": ...}."""
     if isinstance(payload, dict) and payload.get("ok") is False:
         detail = payload.get("message") or payload.get("error") or "unknown error"
         raise ProviderError(f"Fill API returned an error ({context}): {detail}")
+
+
+def _hangar_get_or_not_found(http: HTTPClient, url: str, *, project: str) -> Any:
+    try:
+        return http.get_json(url)
+    except HTTPStatusError as exc:
+        if exc.status_code == 404:
+            raise ProviderError(
+                f"Hangar project or version not found: {project}",
+                hint="check the project coordinates and availability on hangar.papermc.io",
+            ) from exc
+        raise
+
+
+def _check_declared_platform(
+    detail: dict[str, Any],
+    *,
+    project: str,
+    version: str,
+    minecraft_version: str,
+) -> None:
+    """The download pipeline rejects a declared-but-missing platform version, so the
+    recommendation checks it up front."""
+    dependencies = detail.get("platformDependencies")
+    declared = dependencies.get("PAPER") if isinstance(dependencies, dict) else None
+    if not isinstance(declared, list):
+        return
+    if minecraft_version not in {str(item) for item in declared}:
+        raise ProviderError(
+            f"Hangar version {version} of {project} does not declare PAPER support for "
+            f"Minecraft {minecraft_version}",
+            hint="nearby patch versions are not assumed equivalent",
+        )
+
+
+def _channel_name(value: Any) -> str | None:
+    if isinstance(value, dict):
+        name = value.get("name")
+        return name if isinstance(name, str) else None
+    return value if isinstance(value, str) else None
+
+
+def _file_choices(names: list[str], *, context: str) -> tuple[str | None, list[str]]:
+    """One JAR is used directly; several JARs are returned for the user to choose from."""
+    jars = [name for name in names if name.lower().endswith(".jar")]
+    if not jars:
+        raise ProviderError(
+            f"{context} has no JAR files", hint=f"available files: {_summarize_names(names)}"
+        )
+    if len(jars) == 1:
+        return jars[0], []
+    return None, jars
 
 
 def _check_platform_dependencies(
@@ -604,6 +1113,10 @@ def _summarize_versions(versions: set[str]) -> str:
     if len(ordered) > 20:
         return ", ".join(ordered[:20]) + f" ... ({len(ordered)} total)"
     return ", ".join(ordered)
+
+
+def _summarize_names(names: list[str]) -> str:
+    return ", ".join(names) if names else "(none)"
 
 
 def _one_line(value: Any) -> str:

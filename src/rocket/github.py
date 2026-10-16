@@ -233,6 +233,57 @@ def select_release_asset(release: GitHubRelease, *, selector: str | None) -> Git
     return jars[0]
 
 
+def release_for_external_link(github: GitHubClient, url: str) -> GitHubRelease:
+    """Follow an external link that points at a fixed-tag GitHub Release page."""
+    url_class, coordinates = classify_github_url(url)
+    if url_class is not GitHubURLClass.RELEASE_TAG or coordinates is None:
+        raise ProviderError(
+            f"external link is not a fixed GitHub Release tag page: {url}",
+            hint="the wizard only follows fixed-tag Release pages",
+        )
+    return github.get_release(coordinates.owner, coordinates.repo, coordinates.tag)
+
+
+def release_asset_name(
+    release: GitHubRelease,
+    *,
+    version: str,
+    templates: tuple[str, ...],
+) -> str:
+    """Pick the attachment name by template; otherwise only a unique JAR is allowed."""
+    names = [asset.name for asset in release.assets]
+    if templates:
+        wanted = [template.replace("{version}", version) for template in templates]
+        chosen = next((name for name in wanted if name in names), None)
+        if chosen is None:
+            raise ProviderError(
+                f"release {release.owner}/{release.repo}@{release.tag} has none of the "
+                f"expected attachments",
+                hint=f"expected: {_summarize(wanted)}; available: {_summarize(names)}",
+            )
+    else:
+        jars = [name for name in names if name.lower().endswith(".jar")]
+        if len(jars) == 1:
+            chosen = jars[0]
+        elif jars:
+            raise ProviderError(
+                f"release {release.owner}/{release.repo}@{release.tag} has multiple JAR "
+                f"attachments; cannot choose",
+                hint=f"declare asset with the exact upstream filename: {_summarize(jars)}",
+            )
+        else:
+            raise ProviderError(
+                f"release {release.owner}/{release.repo}@{release.tag} has no JAR attachments",
+                hint=f"available: {_summarize(names)}",
+            )
+    if not chosen.lower().endswith(".jar"):
+        raise ProviderError(
+            f"selected attachment {chosen!r} is not a JAR file",
+            hint="only JAR attachments are accepted",
+        )
+    return chosen
+
+
 def _parse_release(payload: Any, *, owner: str, repo: str, tag: str) -> GitHubRelease:
     if not isinstance(payload, dict):
         raise ResolutionError(

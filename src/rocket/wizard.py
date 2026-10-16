@@ -17,9 +17,9 @@ from .catalog import DEFAULT_PLUGINS, CatalogPlugin
 from .console import install_logging, print_error, remove_logging, stdin_is_tty, terminal
 from .errors import EXIT_FAILURE, EXIT_OK, RocketError
 from .http_client import HTTPClient
+from .models import RecommendedPlugin
 from .recommend import (
     RecommendationResult,
-    RecommendedPlugin,
     list_paper_versions,
     recommend_plugins,
 )

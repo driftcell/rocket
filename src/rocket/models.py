@@ -135,6 +135,26 @@ class SearchResult:
 
 
 @dataclass(frozen=True)
+class RecommendedPlugin:
+    """A plugin resolved to an exact, downloadable version (``init``/``add``/``upgrade``)."""
+
+    id: str
+    provider: str
+    project: str
+    version: str
+    asset: str | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class SkippedPlugin:
+    """A plugin that could not be resolved; reported and skipped, not fatal."""
+
+    id: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class DownloadResult:
     """Final result for a single item (used for command output)."""
 
