@@ -5,10 +5,10 @@
 A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
-- Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
+- Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`, `spiget`; resolvers: `auto`, `direct`, `github_release`);
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
-- Finds plugins on Hangar and Modrinth by keyword (`rocket search`), one ranked list with
-  cmd+clickable project links on a TTY;
+- Finds plugins on Hangar, Modrinth and Spiget (SpigotMC) by keyword (`rocket search`), one ranked
+  list with cmd+clickable project links on a TTY;
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
 - Bumps Paper builds, Minecraft releases and plugin versions interactively (`rocket upgrade`);
 - Pins core or a plugin to any exact version interactively, downgrades included (`rocket pin`);
@@ -109,8 +109,8 @@ uv run python -m rocket init --config my/server.toml --force
 
 ## Finding plugins (`rocket search`)
 
-`rocket search <query>` searches Hangar and Modrinth by keyword and merges the hits into one
-list ranked by downloads (five per provider at most):
+`rocket search <query>` searches Hangar, Modrinth and Spiget (SpigotMC) by keyword and merges
+the hits into one list ranked by downloads (five per provider at most):
 
 ```text
 $ rocket search luckperms
@@ -143,7 +143,8 @@ rocket add github:Zrips/Residence --id residence
 rocket remove luckperms
 ```
 
-- The spec is `<provider>:<project>`: a Modrinth slug, or `owner/name` for Hangar and GitHub.
+- The spec is `<provider>:<project>`: a Modrinth slug, `owner/name` for Hangar and GitHub, or the
+  numeric Spigot resource id for Spiget (e.g. `spiget:28140`, from the resource URL).
 - Without `--version`, the newest version the download pipeline can use exactly is resolved for the
   configured `paper.version` and pinned (the same rules `rocket init` applies). With `--version`,
   the exact version is verified against the provider before anything is written, so a typo fails
@@ -213,9 +214,9 @@ rocket pin luckperms    # exact version of one plugin → file, when ambiguous
   version in it, then the build — "always the newest STABLE build (unpinned)" or a specific
   pinned build id.
 - **Plugins** list every version usable with the configured Minecraft version (all Hangar
-  channels, Modrinth release/beta/alpha, and GitHub release tags — an explicit pick, so no
-  "newest" heuristics anywhere). When the chosen version ships several JARs, a second prompt
-  selects the file.
+  channels, Modrinth release/beta/alpha, GitHub release tags, and Spiget versions labeled with
+  their release date — an explicit pick, so no "newest" heuristics anywhere). When the chosen
+  version ships several JARs, a second prompt selects the file.
 - Selecting what is already pinned prints `nothing to change`. Otherwise the same per-item
   atomicity as `rocket upgrade` applies: the pin is written first, and a failed download rolls
   it back. The command is interactive-only; off a terminal it refuses to run (pin by hand and
@@ -258,10 +259,10 @@ uv run --project rocket python -m rocket download --config server.toml
 | `plugin_defaults.platform` | default `PAPER`; this version only supports `PAPER` |
 | `plugin_defaults.follow_external` | boolean, default `true` |
 | `plugins.<id>` | locally unique plugin id: lowercase letters, digits, underscores, hyphens |
-| `plugins.<id>.provider` | required, `hangar`, `github` or `modrinth` |
-| `plugins.<id>.project` | required `owner/name` coordinates (interpreted by the provider) |
-| `plugins.<id>.version` | required non-empty string; the version name for Hangar, an exact tag for GitHub |
-| `plugins.<id>.asset` | optional, full filename of the upstream artifact, exact match (not the local output filename) |
+| `plugins.<id>.provider` | required, `hangar`, `github`, `modrinth` or `spiget` |
+| `plugins.<id>.project` | required coordinates (interpreted by the provider): `owner/name` for Hangar/GitHub, a slug for Modrinth, the numeric Spigot resource id for Spiget |
+| `plugins.<id>.version` | required non-empty string; the version name for Hangar/Spiget, an exact tag for GitHub, the `version_number` for Modrinth |
+| `plugins.<id>.asset` | optional, full filename of the upstream artifact, exact match (not the local output filename); not available for `spiget`, whose downloads are unnamed |
 | `plugins.<id>.resolver` | optional, default `auto`; may be explicitly set to `direct` or `github_release` |
 | `plugins.<id>.platform` / `.follow_external` | override the corresponding defaults |
 
@@ -326,6 +327,7 @@ stdout is a TTY; set `NO_COLOR` to disable colors. Example resolution chains:
 - `hangar → github-release → github-asset`: Hangar external link → GitHub Release → GitHub asset
 - `github → github-release → github-asset`: native GitHub provider
 - `modrinth`: direct link to a Modrinth official file (SHA-512 verification)
+- `spiget`: direct link to the Spiget version-download endpoint (no upstream hash)
 
 ## Exit codes
 
@@ -411,9 +413,10 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 
 ## Known limitations
 
-- Only the implemented resolution kinds are supported (`hangar` / `github` / `modrinth`), and resolving
-  arbitrary websites is not promised; Patreon-style authorization pages and GitHub CE Releases without
-  attachments fail with an explicit error, and no JAR URL is fabricated.
+- Only the implemented resolution kinds are supported (`hangar` / `github` / `modrinth` /
+  `spiget`), and resolving arbitrary websites is not promised; Patreon-style authorization pages
+  and GitHub CE Releases without attachments fail with an explicit error, and no JAR URL is
+  fabricated. Premium and externally hosted Spigot resources are rejected the same way.
 - CoreProtect CE is fetched via the Modrinth provider: its official GitHub CE Release has no attachments
   and its Hangar entry points to Patreon; this tool explicitly does not support those two chains.
 - Modrinth requires an exact `version_number` and never queries latest; file hashes prefer the upstream
@@ -426,7 +429,9 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 - When a GitHub Release `digest` is missing, it is treated as having no upstream hash; the JAR is still
   validated and the actual SHA-256 is printed.
 - Metadata compatibility checks (Hangar `platformDependencies.PAPER` exactly containing the target
-  version) are no substitute for actually starting the server.
+  version; Spiget `testedVersions` matching by major line, so a declared `26.1` covers `26.1.2`)
+  are no substitute for actually starting the server. A Spiget resource that declares no tested
+  versions downloads with a warning instead.
 - `rocket init` and `rocket add` (without `--version`) resolve recommendations once, at the moment
   they run: the written config pins exact versions, and later upstream changes do not affect it;
   GitHub-sourced plugins get the newest release with a usable JAR attachment because GitHub
@@ -445,10 +450,11 @@ src/rocket/
   config.py       server.toml parsing and strict validation
   config_edit.py  add/remove/upgrade: textual [plugins.<id>] section and version-pin edits with round-trip checks
   models.py       shared models (entry/Release/Artifact/result)
-  providers.py    the provider trait + Fill (Paper), Hangar, GitHub, Modrinth implementations
+  providers.py    the provider trait + Fill (Paper), Hangar, GitHub, Modrinth, Spiget implementations
   resolvers.py    Direct / GitHubRelease resolvers and auto selection
   github.py       GitHub Release client, attachment selection, URL classification
   modrinth.py     Modrinth API client, version/file selection
+  spiget.py       Spiget API client (SpigotMC), resource/version selection
   http_client.py  synchronous HTTP client built on httpx + tenacity
   downloader.py   streaming download, validation and atomic replace
   lockfile.py     rocket.lock reading/writing, entry validation and matching support

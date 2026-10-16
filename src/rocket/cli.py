@@ -63,6 +63,7 @@ from .providers import (
 )
 from .recommend import recommend_plugin
 from .resolvers import select_resolver
+from .spiget import SpigetClient
 from .wizard import Prompter, QuestionaryPrompter, run_init
 
 _log = logging.getLogger("rocket")
@@ -135,7 +136,7 @@ def main(
     )
     search_parser = subparsers.add_parser(
         "search",
-        help="Search Hangar and Modrinth for plugins",
+        help="Search Hangar, Modrinth and Spiget for plugins",
     )
     search_parser.add_argument(
         "query",
@@ -554,6 +555,7 @@ def _verify_add_version(
         http=http,
         github=GitHubClient(http),
         modrinth=ModrinthClient(http),
+        spiget=SpigetClient(http),
         minecraft_version=config.paper.version,
         output_dir=config.download.output_dir,
         log=_log,
@@ -685,6 +687,7 @@ def _run_download(
             http=http,
             github=GitHubClient(http),
             modrinth=ModrinthClient(http),
+            spiget=SpigetClient(http),
             minecraft_version=config.paper.version,
             output_dir=config.download.output_dir,
             log=_log,

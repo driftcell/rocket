@@ -32,6 +32,11 @@ from .helpers import (
     modrinth_versions_url,
     sha256_hex,
     sha512_hex,
+    spiget_download_url,
+    spiget_resource_payload,
+    spiget_resource_url,
+    spiget_version_payload,
+    spiget_versions_url,
     write_config,
 )
 
@@ -128,6 +133,36 @@ def test_upgrade_plugins_interactive_bumps_version(tmp_path: Path, capsys) -> No
     assert " + good.jar (1.1.0, hangar)" in out
     assert ("checkbox", "Plugins to upgrade") in prompter.calls
     assert not any(kind == "select" for kind, _ in prompter.calls)
+
+
+def test_upgrade_plugins_spiget_force_bumps_version(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    add_paper_routes(api)
+    jar = make_plugin_jar_bytes(name="LuckPerms5571")
+    api.add_json(
+        spiget_resource_url("28140"),
+        spiget_resource_payload(resource_id=28140, name="LuckPerms", tested_versions=["26.1"]),
+    )
+    api.add_json(
+        spiget_versions_url("28140"),
+        [
+            spiget_version_payload(version_id=648014, name="5.5.71", release_date=1786045114),
+            spiget_version_payload(version_id=590885, name="5.5.0", release_date=1748247660),
+        ],
+    )
+    api.add_bytes(spiget_download_url("28140", 648014), jar)
+    text = base_config(
+        '[plugins.luckperms]\nprovider = "spiget"\nproject = "28140"\nversion = "5.5.0"\n'
+    )
+
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+
+    assert code == 0
+    config_text = (tmp_path / "server.toml").read_text()
+    assert 'version = "5.5.71"' in config_text
+    assert "asset" not in config_text
+    assert (tmp_path / "artifacts" / "plugins" / "luckperms.jar").read_bytes() == jar
+    assert " + luckperms.jar (5.5.71, spiget)" in capsys.readouterr().out
 
 
 def test_upgrade_plugins_modrinth_asset_template(tmp_path: Path, capsys) -> None:

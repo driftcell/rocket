@@ -10,6 +10,7 @@ from .github import GitHubClient
 from .http_client import HTTPClient
 from .models import ArtifactKind
 from .modrinth import ModrinthClient
+from .spiget import SpigetClient
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ProviderClients:
     http: HTTPClient
     github: GitHubClient
     modrinth: ModrinthClient
+    spiget: SpigetClient
     log: logging.Logger
 
 
@@ -46,5 +48,6 @@ def provider_clients(http: HTTPClient) -> ProviderClients:
         http=http,
         github=GitHubClient(http),
         modrinth=ModrinthClient(http),
+        spiget=SpigetClient(http),
         log=logging.getLogger("rocket"),
     )

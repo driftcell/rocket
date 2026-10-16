@@ -36,6 +36,11 @@ from .helpers import (
     modrinth_versions_url,
     sha256_hex,
     sha512_hex,
+    spiget_download_url,
+    spiget_resource_payload,
+    spiget_resource_url,
+    spiget_version_payload,
+    spiget_versions_url,
     write_config,
 )
 
@@ -190,6 +195,58 @@ def test_pin_plugin_hangar_lists_snapshot_channel(tmp_path: Path) -> None:
 
     assert code == 0
     assert 'version = "1.2.0-SNAPSHOT"' in (tmp_path / "server.toml").read_text()
+
+
+def test_pin_plugin_spiget_downgrade_pins_no_asset(tmp_path: Path) -> None:
+    api = FakeAPI()
+    add_paper_routes(api)
+    jar = make_plugin_jar_bytes(name="LuckPerms550")
+    api.add_json(
+        spiget_resource_url("28140"),
+        spiget_resource_payload(resource_id=28140, name="LuckPerms", tested_versions=["26.1"]),
+    )
+    api.add_json(
+        spiget_versions_url("28140"),
+        [
+            spiget_version_payload(version_id=648014, name="5.5.71", release_date=1786045114),
+            spiget_version_payload(version_id=590885, name="5.5.0", release_date=1748247660),
+        ],
+    )
+    api.add_bytes(spiget_download_url("28140", 590885), jar)
+    text = base_config(
+        '[plugins.luckperms]\nprovider = "spiget"\nproject = "28140"\nversion = "5.5.71"\n'
+    )
+    prompter = ScriptedPrompter(select=["5.5.0"])
+
+    code = run_pin(tmp_path, api, text, argv=["pin", "luckperms"], prompter=prompter)
+
+    assert code == 0
+    config_text = (tmp_path / "server.toml").read_text()
+    assert 'version = "5.5.0"' in config_text
+    assert "asset" not in config_text
+    assert (tmp_path / "artifacts" / "plugins" / "luckperms.jar").read_bytes() == jar
+    # spiget serves one unnamed file per version: no file prompt follows the version pick
+    assert [kind for kind, _ in prompter.calls] == ["select"]
+    choices = prompter.choices["luckperms version (current: 5.5.71)"]
+    assert choices == ["5.5.71", "5.5.0"]
+
+
+def test_pin_plugin_spiget_incompatible_declared_versions_fail(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    api.add_json(
+        spiget_resource_url("28140"),
+        spiget_resource_payload(resource_id=28140, name="LuckPerms", tested_versions=["1.12"]),
+    )
+    text = base_config(
+        '[plugins.luckperms]\nprovider = "spiget"\nproject = "28140"\nversion = "5.5.71"\n'
+    )
+    prompter = ScriptedPrompter(select=["5.5.71"])
+
+    code = run_pin(tmp_path, api, text, argv=["pin", "luckperms"], prompter=prompter)
+
+    assert code == 1
+    assert "declared tested versions do not include Minecraft 26.1.2" in capsys.readouterr().err
+    assert prompter.calls == []
 
 
 def test_pin_plugin_modrinth_multi_jar_selects_the_file(tmp_path: Path) -> None:

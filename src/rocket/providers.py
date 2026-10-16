@@ -1,4 +1,4 @@
-"""Providers: Fill (Paper), Hangar, GitHub, Modrinth.
+"""Providers: Fill (Paper), Hangar, GitHub, Modrinth, Spiget.
 
 Scope: query the declared project and exact version; return download entries and metadata;
 never treat an arbitrary web page as a JAR and never select other versions.
@@ -48,6 +48,16 @@ from .modrinth import (
     parse_slug,
     select_file,
     select_version,
+)
+from .spiget import (
+    SpigetResource,
+    check_tested_versions,
+    parse_resource_id,
+    version_detail,
+    version_download_url,
+)
+from .spiget import (
+    select_version as select_spiget_version,
 )
 
 _FILL_BASE = "https://fill.papermc.io/v3"
@@ -984,10 +994,115 @@ class ModrinthProvider(PluginProvider):
         return select_file(version, selector=selector)
 
 
+class SpigetProvider(PluginProvider):
+    """Spiget API v2 (SpigotMC resources; the exact version name is pinned)."""
+
+    name = "spiget"
+    supports_search = True
+
+    @staticmethod
+    def parse_project(project: str, *, field_path: str) -> str:
+        return parse_resource_id(project, field_path=field_path)
+
+    @staticmethod
+    def page_url(project: str) -> str:
+        return f"https://www.spigotmc.org/resources/{project}"
+
+    def resolve(self, spec: PluginConfig, *, minecraft_version: str) -> ReleaseInfo:
+        resource_id = parse_resource_id(spec.project, field_path=f"plugins.{spec.id}.project")
+        resource = self._checked_resource(resource_id)
+        versions = self.context.spiget.get_versions(resource_id)
+        version = select_spiget_version(versions, name=spec.version, resource_id=resource_id)
+        compatibility, note = check_tested_versions(resource, minecraft_version=minecraft_version)
+        if compatibility is Compatibility.UNKNOWN:
+            self.context.log.warning("[%s] warning: %s", spec.id, note)
+        self.context.log.info(
+            "[%s] selected Spigot version %s (id %s)", spec.id, version.name, version.version_id
+        )
+        entry = DownloadEntry(
+            kind=EntryKind.DIRECT,
+            url=version_download_url(resource_id, version.version_id),
+            origin=self.name,
+        )
+        return ReleaseInfo(
+            artifact_id=spec.id,
+            kind=ArtifactKind.PLUGIN,
+            provider=self.name,
+            project=spec.project,
+            version=spec.version,
+            entry=entry,
+            asset=spec.asset,
+            platform=spec.platform,
+            compatibility=compatibility,
+            compatibility_note=note,
+            source_chain=("spiget",),
+        )
+
+    def search(self, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+        return self.context.spiget.search_resources(query, limit=limit)
+
+    def recommend(
+        self,
+        project: str,
+        *,
+        templates: tuple[str, ...],
+        minecraft_version: str,
+        plugin_id: str,
+    ) -> RecommendedPlugin:
+        resource_id = parse_resource_id(project, field_path="project")
+        if templates:
+            raise ProviderError(
+                "Spiget versions ship a single unnamed file; asset cannot be verified",
+                hint="drop the asset and declare only the exact version",
+            )
+        resource = self._checked_resource(resource_id)
+        _compatibility, note = check_tested_versions(resource, minecraft_version=minecraft_version)
+        versions = self.context.spiget.get_versions(resource_id)
+        return RecommendedPlugin(
+            id=plugin_id,
+            provider=self.name,
+            project=project,
+            version=versions[0].name,
+            note=note,
+        )
+
+    def list_versions(self, project: str, *, minecraft_version: str) -> list[tuple[str, str]]:
+        """(version name, release date), newest first; compatibility is resource-level,
+        so a declared mismatch rejects the whole list."""
+        resource_id = parse_resource_id(project, field_path="project")
+        resource = self._checked_resource(resource_id)
+        check_tested_versions(resource, minecraft_version=minecraft_version)
+        versions = self.context.spiget.get_versions(resource_id)
+        return [
+            (version.name, version_detail(version)) for version in versions[:_PIN_CATALOG_LIMIT]
+        ]
+
+    def file_choices(self, project: str, *, version: str) -> tuple[str | None, list[str]]:
+        return None, []  # Spiget serves a single unnamed file per version; no asset is pinned
+
+    def _checked_resource(self, resource_id: str) -> SpigetResource:
+        """Fetch the resource and reject the ones that can never yield a JAR."""
+        resource = self.context.spiget.get_resource(resource_id)
+        if resource.premium:
+            raise ProviderError(
+                f"Spigot resource {resource_id} ({resource.name}) is premium",
+                hint="premium resources cannot be downloaded without purchase; "
+                "use another provider or place the JAR manually",
+            )
+        if resource.external:
+            raise ProviderError(
+                f"Spigot resource {resource_id} ({resource.name}) is hosted externally",
+                hint="external Spigot resources point at an arbitrary page, not a JAR; "
+                "use the hangar, github or modrinth provider instead",
+            )
+        return resource
+
+
 PROVIDERS: dict[str, type[PluginProvider]] = {
     HangarProvider.name: HangarProvider,
     GitHubProvider.name: GitHubProvider,
     ModrinthProvider.name: ModrinthProvider,
+    SpigetProvider.name: SpigetProvider,
 }
 
 

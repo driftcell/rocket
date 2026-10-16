@@ -498,6 +498,79 @@ def modrinth_version_payload(
 
 
 # ---------------------------------------------------------------------------
+# Spiget payloads
+# ---------------------------------------------------------------------------
+
+
+def spiget_resource_url(resource_id: str) -> str:
+    params = urlencode({"fields": "id,name,testedVersions,premium,external"})
+    return f"https://api.spiget.org/v2/resources/{resource_id}?{params}"
+
+
+def spiget_versions_url(resource_id: str, *, page: int = 1, size: int = 100) -> str:
+    params = urlencode(
+        {
+            "size": str(size),
+            "page": str(page),
+            "sort": "-releaseDate",
+            "fields": "id,name,releaseDate",
+        }
+    )
+    return f"https://api.spiget.org/v2/resources/{resource_id}/versions?{params}"
+
+
+def spiget_download_url(resource_id: str, version_id: int) -> str:
+    return f"https://api.spiget.org/v2/resources/{resource_id}/versions/{version_id}/download"
+
+
+def spiget_search_url(query: str, *, limit: int = 5) -> str:
+    params = urlencode(
+        {
+            "field": "name",
+            "size": str(limit),
+            "sort": "-downloads",
+            "fields": "id,name,tag,downloads",
+        }
+    )
+    return f"https://api.spiget.org/v2/search/resources/{quote(query, safe='')}?{params}"
+
+
+def spiget_resource_payload(
+    *,
+    resource_id: int,
+    name: str = "Demo",
+    tested_versions: list[str] | None = None,
+    premium: bool = False,
+    external: bool = False,
+) -> dict[str, object]:
+    return {
+        "id": resource_id,
+        "name": name,
+        "testedVersions": tested_versions,
+        "premium": premium,
+        "external": external,
+    }
+
+
+def spiget_version_payload(
+    *, version_id: int, name: str, release_date: int | None = None
+) -> dict[str, object]:
+    payload: dict[str, object] = {"id": version_id, "name": name}
+    if release_date is not None:
+        payload["releaseDate"] = release_date
+    return payload
+
+
+def spiget_search_item(
+    *, resource_id: int, name: str, tag: str = "", downloads: int | None = 4321
+) -> dict[str, object]:
+    item: dict[str, object] = {"id": resource_id, "name": name, "tag": tag}
+    if downloads is not None:
+        item["downloads"] = downloads
+    return item
+
+
+# ---------------------------------------------------------------------------
 # Config text
 # ---------------------------------------------------------------------------
 

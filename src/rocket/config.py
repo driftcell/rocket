@@ -18,7 +18,7 @@ from .models import ResolverChoice
 
 _PLUGIN_ID_RE = re.compile(r"[a-z0-9_-]+")
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
-_PROVIDER_CHOICES = ("hangar", "github", "modrinth")
+_PROVIDER_CHOICES = ("hangar", "github", "modrinth", "spiget")
 _PLATFORM_CHOICES = ("PAPER",)
 _GENERIC_USER_AGENT_PREFIXES = ("curl", "wget", "python-requests", "httpx", "python-urllib")
 
