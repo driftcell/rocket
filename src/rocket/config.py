@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import USER_AGENT
 from .errors import ConfigError
 from .models import ResolverChoice
 
@@ -33,9 +34,9 @@ class PaperConfig:
 
 @dataclass(frozen=True)
 class HttpConfig:
-    """[http] section."""
+    """[http] section; the whole section and every field in it is optional."""
 
-    user_agent: str
+    user_agent: str = USER_AGENT
     timeout_seconds: float = 30.0
     retries: int = 3
 
@@ -115,16 +116,7 @@ def parse_config(raw: dict[str, Any], *, path: Path) -> Config:
             hint="the [paper] section is required; at least declare paper.version",
         )
     paper = _parse_paper(_require_table(raw["paper"], "paper"))
-
-    if "http" not in raw:
-        raise ConfigError(
-            "missing [http] section",
-            hint=(
-                "http.user_agent is required: upstream services need software "
-                "identification and a contact URL or email"
-            ),
-        )
-    http = _parse_http(_require_table(raw["http"], "http"))
+    http = _parse_http(raw.get("http"))
 
     download = _parse_download(raw.get("download"), config_path=path)
     plugin_defaults = _parse_plugin_defaults(raw.get("plugin_defaults"))
@@ -214,23 +206,16 @@ def _parse_paper(table: dict[str, Any]) -> PaperConfig:
     return PaperConfig(version=version_value, channel=channel, build=build)
 
 
-def _parse_http(table: dict[str, Any]) -> HttpConfig:
+def _parse_http(value: Any) -> HttpConfig:
+    if value is None:
+        return HttpConfig()
+    table = _require_table(value, "http")
     _check_unknown_keys(table, {"user_agent", "timeout_seconds", "retries"}, "http")
 
-    if "user_agent" not in table:
-        raise ConfigError(
-            "missing required field http.user_agent",
-            hint=(
-                "Fill requires a User-Agent that identifies the software and includes a contact "
-                "URL or email, e.g. rocket/0.1 (you@example.com)"
-            ),
-        )
-    user_agent = table["user_agent"]
-    if not isinstance(user_agent, str):
-        raise _type_error("http.user_agent", user_agent, "a string")
-    if not user_agent.strip():
-        raise ConfigError("http.user_agent must not be empty")
-
+    # The default identifies rocket itself (version + project URL), which already
+    # satisfies the upstream software-identification policy; users may still
+    # override it with their own contact info.
+    user_agent = _optional_string(table, "user_agent", "http") or USER_AGENT
     timeout_seconds = _positive_number(table, "timeout_seconds", "http", default=30.0)
     retries = _non_negative_int(table, "retries", "http", default=3)
     return HttpConfig(user_agent=user_agent, timeout_seconds=timeout_seconds, retries=retries)

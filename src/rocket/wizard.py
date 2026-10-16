@@ -233,11 +233,6 @@ def build_config_text(*, paper_version: str, plugins: Sequence[RecommendedPlugin
     data: dict[str, object] = {
         "schema_version": 1,
         "paper": {"version": paper_version, "channel": "STABLE"},
-        "http": {
-            "user_agent": INIT_USER_AGENT,
-            "timeout_seconds": 30,
-            "retries": 3,
-        },
         "download": {"output_dir": "./artifacts"},
         "plugin_defaults": {"platform": "PAPER", "follow_external": True},
     }

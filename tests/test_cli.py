@@ -11,6 +11,7 @@ from rocket import __version__
 from rocket.cli import _format_count, _format_duration, _format_size, main
 
 from .helpers import (
+    TEST_USER_AGENT,
     FakeAPI,
     add_paper_routes,
     base_config,
@@ -116,6 +117,21 @@ def test_success_layout_and_exit_codes(tmp_path: Path, capsys) -> None:
     assert " + good.jar (1.0.0, hangar)" in out
     assert "[paper]" not in captured.err
     assert_no_unexpected_state_files(tmp_path)
+
+
+def test_config_without_http_section_downloads(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    add_paper_routes(api)
+    plugin_jar = add_good_plugin_routes(api)
+    text = base_config(
+        '[plugins.good]\nprovider = "hangar"\nproject = "Owner/Good"\nversion = "1.0.0"\n'
+    ).replace(f'[http]\nuser_agent = "{TEST_USER_AGENT}"\n', "")
+
+    code = run_main(tmp_path, api, text)
+
+    assert code == 0
+    assert (tmp_path / "artifacts" / "plugins" / "good.jar").read_bytes() == plugin_jar
+    assert "Downloaded 2 items" in capsys.readouterr().out
 
 
 def test_one_plugin_fails_others_succeed(tmp_path: Path, capsys) -> None:

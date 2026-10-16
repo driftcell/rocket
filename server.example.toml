@@ -1,9 +1,10 @@
 # rocket example config: declare the exact versions of the Paper server and plugins, then run
 #   uv run python -m rocket download --config server.example.toml
 #
-# Note: before making real network requests, replace the contact in http.user_agent with
-# a real contact email or project URL. Fill requires a User-Agent that identifies the
-# software and includes contact info; generic defaults such as curl or wget are rejected.
+# The [http] section is optional: requests identify as rocket/<version> plus the project URL
+# by default, which satisfies the upstream software-identification policy. Uncomment the
+# section to send your own contact email or project URL instead (generic curl/wget-style
+# agents get a warning).
 
 schema_version = 1
 
@@ -12,10 +13,10 @@ version = "26.1.2"     # exact Minecraft release (not a version group; do not wr
 channel = "STABLE"     # this version only supports STABLE
 # build = 42           # optional: download this exact stable build; when omitted, the STABLE build with the highest id for this version is chosen
 
-[http]
-user_agent = "rocket/0.1 (contact@example.com)"   # must be replaced with real contact info
-timeout_seconds = 30
-retries = 3            # at most 3 retries after the first attempt
+# [http]
+# user_agent = "rocket/0.1 (contact@example.com)"   # your own contact info
+# timeout_seconds = 30
+# retries = 3            # at most 3 retries after the first attempt
 
 [download]
 output_dir = "./artifacts"   # relative paths are resolved against this config file's directory
