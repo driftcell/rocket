@@ -107,9 +107,7 @@ def test_unsupported_version_is_ignored(tmp_path: Path) -> None:
 def test_invalid_paper_entry_is_dropped_but_plugins_kept(tmp_path: Path) -> None:
     path = tmp_path / "rocket.lock"
     write_lock(path, LockData(paper=paper_entry(), plugins={"good": plugin_entry()}))
-    path.write_text(
-        path.read_text(encoding="utf-8").replace("build = 42\n", ""), encoding="utf-8"
-    )
+    path.write_text(path.read_text(encoding="utf-8").replace("build = 42\n", ""), encoding="utf-8")
 
     loaded, warnings = load_lock(path)
 

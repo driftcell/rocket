@@ -144,8 +144,7 @@ class FillPaperProvider:
                         f"build {paper.build} exists but is not on the STABLE channel "
                         f"(channel: {channel!r})",
                         hint=(
-                            "an explicit build is used as-is; "
-                            "there is no fallback to other builds"
+                            "an explicit build is used as-is; there is no fallback to other builds"
                         ),
                     )
             matches = [build for build in stable if build.get("id") == paper.build]
@@ -298,8 +297,7 @@ class HangarProvider(PluginProvider):
             raise
         if not isinstance(version, dict):
             raise ProviderError(
-                f"Hangar version response has invalid structure: "
-                f"{spec.project} {spec.version!r}"
+                f"Hangar version response has invalid structure: {spec.project} {spec.version!r}"
             )
         name = version.get("name")
         if name != spec.version:

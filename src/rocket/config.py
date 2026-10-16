@@ -174,8 +174,7 @@ def _parse_paper(table: dict[str, Any]) -> PaperConfig:
         raise ConfigError(
             f"paper.version must be a quoted string, got {_type_name(version_value)}",
             hint=(
-                'write versions as strings such as "26.1.2"; '
-                "numeric values like 26.1 are rejected"
+                'write versions as strings such as "26.1.2"; numeric values like 26.1 are rejected'
             ),
         )
     if not version_value.strip():
