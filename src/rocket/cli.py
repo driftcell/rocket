@@ -1329,6 +1329,12 @@ def _pin_core(config: Config, *, http: HTTPClient, prompter: Prompter) -> PaperP
     return PaperPin(version=version, build=build)
 
 
+def _version_choice_title(name: str, kind: str, *, current: bool) -> str:
+    """Pin-catalog label; some providers (zrips.net) have entries without any detail."""
+    title = f"{name} · {kind}" if kind else name
+    return f"{title} (current)" if current else title
+
+
 def _pin_plugin(
     plugin: PluginConfig, config: Config, *, http: HTTPClient, prompter: Prompter
 ) -> PluginPin | None:
@@ -1339,7 +1345,7 @@ def _pin_plugin(
 
     choices = [
         (
-            f"{name} · {kind} (current)" if name == plugin.version else f"{name} · {kind}",
+            _version_choice_title(name, kind, current=name == plugin.version),
             name,
         )
         for name, kind in versions

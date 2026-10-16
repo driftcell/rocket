@@ -571,6 +571,46 @@ def spiget_search_item(
 
 
 # ---------------------------------------------------------------------------
+# Zrips payloads
+# ---------------------------------------------------------------------------
+
+
+def zrips_listing_url(project: str) -> str:
+    return f"https://www.zrips.net/{project}/"
+
+
+def zrips_manager_download_url(project: str, version: str) -> str:
+    return f"https://www.zrips.net/{project}/download.php?file={project}{version}.jar"
+
+
+def zrips_direct_download_url(project: str, version: str) -> str:
+    return f"https://www.zrips.net/{project}/{project}{version}.jar"
+
+
+def zrips_file_manager_html(project: str, versions: list[str]) -> str:
+    """PHP file-manager layout (``download.php?file=`` links with upload dates)."""
+    items = "".join(
+        f'<li><a href="download.php?file={project}{version}.jar">'
+        f"[01/0{index + 1}/2026 12:00:00] {project} {version} "
+        f'<span class="download-count" title="Times Downloaded"> {100 - index}</span></a></li>'
+        for index, version in enumerate(versions)
+    )
+    return (
+        f"<html><head><title>{project} file downloader</title></head><body>"
+        f'<div id="file-manager"><ul class="manager">{items}</ul></div></body></html>'
+    )
+
+
+def zrips_wordpress_html(project: str, versions: list[str]) -> str:
+    """WordPress page layout (direct JAR links, optional trailing notes)."""
+    items = "".join(
+        f'<li><a href="/{project}/{project}{version}.jar"> {project}{version}.jar</a></li>'
+        for version in versions
+    )
+    return f"<html><body><h1>{project}</h1><ul>{items}</ul></body></html>"
+
+
+# ---------------------------------------------------------------------------
 # Config text
 # ---------------------------------------------------------------------------
 
