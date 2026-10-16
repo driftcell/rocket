@@ -11,7 +11,7 @@ import json
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -172,8 +172,31 @@ def hangar_version_url(slug: str, version: str) -> str:
     return f"https://hangar.papermc.io/api/v1/projects/{quoted_slug}/versions/{quoted_version}"
 
 
+def hangar_versions_url(
+    slug: str,
+    *,
+    platform_version: str,
+    channel: str = "Release",
+    limit: int = 10,
+) -> str:
+    params = urlencode(
+        {
+            "platform": "PAPER",
+            "platformVersion": platform_version,
+            "channel": channel,
+            "limit": str(limit),
+        }
+    )
+    quoted_slug = quote(slug, safe="")
+    return f"https://hangar.papermc.io/api/v1/projects/{quoted_slug}/versions?{params}"
+
+
 def github_release_api_url(owner: str, repo: str, tag: str) -> str:
     return f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{quote(tag, safe='')}"
+
+
+def github_releases_url(owner: str, repo: str, *, per_page: int = 30) -> str:
+    return f"https://api.github.com/repos/{owner}/{repo}/releases?per_page={per_page}"
 
 
 # ---------------------------------------------------------------------------
@@ -263,13 +286,32 @@ def hangar_external_paper(*, external_url: str) -> dict[str, object]:
     return {"PAPER": {"downloadUrl": None, "externalUrl": external_url, "fileInfo": None}}
 
 
+def hangar_version_list_payload(results: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "pagination": {"count": len(results), "limit": len(results), "offset": 0},
+        "result": results,
+    }
+
+
+def hangar_version_list_item(*, name: str, channel: str = "Release") -> dict[str, object]:
+    return {"name": name, "channel": {"name": channel}}
+
+
 def github_release_payload(
     *,
     html_url: str,
     tag: str,
     assets: list[dict[str, object]],
+    draft: bool = False,
+    prerelease: bool = False,
 ) -> dict[str, object]:
-    return {"tag_name": tag, "html_url": html_url, "assets": assets}
+    return {
+        "tag_name": tag,
+        "html_url": html_url,
+        "assets": assets,
+        "draft": draft,
+        "prerelease": prerelease,
+    }
 
 
 def github_asset_payload(

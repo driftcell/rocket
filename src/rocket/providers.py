@@ -14,6 +14,7 @@ from .config import PaperConfig, PluginConfig
 from .context import PipelineContext
 from .errors import HTTPStatusError, ProviderError
 from .github import parse_project
+from .http_client import HTTPClient
 from .models import (
     ArtifactKind,
     Checksum,
@@ -51,7 +52,7 @@ class FillPaperProvider:
         self.context = context
 
     def resolve(self, paper: PaperConfig) -> ReleaseInfo:
-        versions = self._fetch_versions()
+        versions = fetch_paper_versions(self.context.http)
         all_releases = {member for members in versions.values() for member in members}
         if paper.version not in all_releases:
             if paper.version in versions:
@@ -90,28 +91,6 @@ class FillPaperProvider:
             build=build_id if isinstance(build_id, int) else None,
             source_chain=("fill",),
         )
-
-    def _fetch_versions(self) -> dict[str, list[str]]:
-        payload = self.context.http.get_json(f"{_FILL_BASE}/projects/paper")
-        if not isinstance(payload, dict):
-            raise ProviderError("Fill project response has invalid structure (expected object)")
-        _raise_on_api_error(payload, context="project")
-        versions = payload.get("versions")
-        if not isinstance(versions, dict):
-            raise ProviderError(
-                "Fill project response is missing the versions field",
-                hint=(
-                    "the upstream response contract may have changed; "
-                    "update the adapter instead of guessing"
-                ),
-            )
-        result: dict[str, list[str]] = {}
-        for group, members in versions.items():
-            if isinstance(members, list):
-                result[str(group)] = [member for member in members if isinstance(member, str)]
-        if not result:
-            raise ProviderError("Fill project response has no usable version groups")
-        return result
 
     def _fetch_builds(self, version: str) -> list[dict[str, Any]]:
         url = f"{_FILL_BASE}/projects/paper/versions/{quote(version, safe='')}/builds"
@@ -208,6 +187,30 @@ class FillPaperProvider:
             size=size,
             checksum=Checksum(algorithm="sha256", value=sha256.lower()),
         )
+
+
+def fetch_paper_versions(http: HTTPClient) -> dict[str, list[str]]:
+    """Fetch the Fill version-group mapping (group -> member releases)."""
+    payload = http.get_json(f"{_FILL_BASE}/projects/paper")
+    if not isinstance(payload, dict):
+        raise ProviderError("Fill project response has invalid structure (expected object)")
+    _raise_on_api_error(payload, context="project")
+    versions = payload.get("versions")
+    if not isinstance(versions, dict):
+        raise ProviderError(
+            "Fill project response is missing the versions field",
+            hint=(
+                "the upstream response contract may have changed; "
+                "update the adapter instead of guessing"
+            ),
+        )
+    result: dict[str, list[str]] = {}
+    for group, members in versions.items():
+        if isinstance(members, list):
+            result[str(group)] = [member for member in members if isinstance(member, str)]
+    if not result:
+        raise ProviderError("Fill project response has no usable version groups")
+    return result
 
 
 class HangarProvider(PluginProvider):

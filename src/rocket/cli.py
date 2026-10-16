@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m rocket download --config server.toml``."""
+"""Command-line entry point: ``python -m rocket download`` and ``python -m rocket init``."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
 import httpx
 
 from . import __version__
 from .config import Config, PluginConfig, load_config
+from .console import install_logging, print_error, remove_logging, style
 from .context import PipelineContext
 from .downloader import HTTPDownloader
 from .errors import (
@@ -40,6 +40,7 @@ from .models import (
 from .modrinth import ModrinthClient
 from .providers import PROVIDERS, FillPaperProvider
 from .resolvers import select_resolver
+from .wizard import Prompter, run_init
 
 _log = logging.getLogger("rocket")
 
@@ -59,8 +60,9 @@ def main(
     *,
     transport: httpx.BaseTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    prompter: Prompter | None = None,
 ) -> int:
-    """CLI entry point; ``transport``/``sleep`` are only for test injection."""
+    """CLI entry point; ``transport``/``sleep``/``prompter`` are only for test injection."""
     parser = argparse.ArgumentParser(
         prog="rocket",
         description="Declaratively download the Paper server and plugin JARs",
@@ -91,7 +93,29 @@ def main(
         action="store_true",
         help="ignore rocket.lock, re-resolve every item and rewrite the lock",
     )
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Interactively generate a starter server.toml",
+    )
+    init_parser.add_argument(
+        "--config",
+        default="server.toml",
+        help="path of the file to write (default: ./server.toml)",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing config file",
+    )
     args = parser.parse_args(argv)
+    if args.command == "init":
+        return run_init(
+            Path(args.config),
+            force=args.force,
+            transport=transport,
+            sleep=sleep,
+            prompter=prompter,
+        )
     return run_download(
         Path(args.config),
         transport=transport,
@@ -110,13 +134,13 @@ def run_download(
     upgrade: bool = False,
 ) -> int:
     """Run one download; return the process exit code (0 all ok, 1 failures, 2 invalid config)."""
-    handler = _install_logging(logging.INFO if verbose else logging.WARNING)
+    handler = install_logging(logging.INFO if verbose else logging.WARNING)
     try:
         return _run_download(
             config_path, transport=transport, sleep=sleep, verbose=verbose, upgrade=upgrade
         )
     finally:
-        _remove_logging(handler)
+        remove_logging(handler)
 
 
 def _run_download(
@@ -130,7 +154,7 @@ def _run_download(
     try:
         config = load_config(config_path)
     except RocketError as exc:
-        _print_error(exc.message, hint=exc.hint)
+        print_error(exc.message, hint=exc.hint)
         return exc.exit_code
     for warning in config.warnings:
         _log.warning("config warning: %s", warning)
@@ -200,7 +224,7 @@ def _run_download(
             changed = write_lock(lock_file, _merge_lock(config, fresh_entries, previous_lock))
         except LockError as exc:
             failures += 1
-            _print_error(exc.message, hint=exc.hint)
+            print_error(exc.message, hint=exc.hint)
         else:
             if changed:
                 _log.info("[lock] wrote %s", lock_file)
@@ -397,7 +421,7 @@ def _print_run_summary(
 
 
 def _phase_line(text: str, seconds: float) -> str:
-    return f"{text} in {_style(_format_duration(seconds), '2', stream=sys.stdout)}"
+    return f"{text} in {style(_format_duration(seconds), '2', stream=sys.stdout)}"
 
 
 def _plural(count: int, noun: str) -> str:
@@ -421,7 +445,7 @@ def _print_item_result(result: DownloadResult, *, verbose: bool) -> None:
     elif verbose:
         print(_format_item_line(result, downloaded=False))
     if verbose:
-        print(_style(_format_item_detail(result), "2", stream=sys.stdout))
+        print(style(_format_item_detail(result), "2", stream=sys.stdout))
 
 
 def _format_item_line(result: DownloadResult, *, downloaded: bool) -> str:
@@ -430,7 +454,7 @@ def _format_item_line(result: DownloadResult, *, downloaded: bool) -> str:
         version = f"{version} {result.detail}"
     chain = " → ".join(result.source_chain)
     marker = (
-        _style("+", "32", stream=sys.stdout) if downloaded else _style("=", "2", stream=sys.stdout)
+        style("+", "32", stream=sys.stdout) if downloaded else style("=", "2", stream=sys.stdout)
     )
     return f" {marker} {result.target.name} ({version}, {chain})"
 
@@ -444,48 +468,11 @@ def _format_item_detail(result: DownloadResult) -> str:
     return f"    {result.target} {result.size} bytes {checksum} ({hash_state})"
 
 
-def _print_error(message: str, *, hint: str | None = None) -> None:
-    text = f"{_style('error:', '1;31', stream=sys.stderr)} {message}"
-    if hint:
-        text += " " + _style(f"(hint: {hint})", "2", stream=sys.stderr)
-    print(text, file=sys.stderr)
-
-
 def _print_item_error(item_id: str, exc: RocketError) -> None:
-    _print_error(f"{item_id}: {exc.message}", hint=exc.hint)
+    print_error(f"{item_id}: {exc.message}", hint=exc.hint)
 
 
 def _print_unexpected_error(item_id: str, exc: Exception) -> None:
     _log.debug("[%s] unexpected error details", item_id, exc_info=True)
     unexpected = RocketError(f"unexpected error ({exc.__class__.__name__}): {exc}")
     _print_item_error(item_id, unexpected)
-
-
-def _style(text: str, code: str, *, stream: TextIO) -> str:
-    if not _use_color(stream):
-        return text
-    return f"\x1b[{code}m{text}\x1b[0m"
-
-
-def _use_color(stream: TextIO) -> bool:
-    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
-        return False
-    try:
-        return stream.isatty()
-    except (AttributeError, ValueError):  # pragma: no cover - closed or unusual streams
-        return False
-
-
-def _install_logging(level: int = logging.WARNING) -> logging.Handler:
-    """Attach a stderr handler to the rocket logger for this run; removed afterwards."""
-    logger = logging.getLogger("rocket")
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(level)
-    return handler
-
-
-def _remove_logging(handler: logging.Handler) -> None:
-    logging.getLogger("rocket").removeHandler(handler)
-    handler.close()
