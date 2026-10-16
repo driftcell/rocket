@@ -21,8 +21,14 @@ if TYPE_CHECKING:
 
 from . import USER_AGENT, __version__
 from .config import Config, PluginConfig, is_valid_plugin_id, load_config
-from .config_edit import add_plugin_section, remove_plugin_section
-from .console import install_logging, print_error, remove_logging, terminal
+from .config_edit import (
+    PaperPin,
+    PluginPin,
+    add_plugin_section,
+    remove_plugin_section,
+    update_version_pins,
+)
+from .console import install_logging, print_error, remove_logging, stdin_is_tty, terminal
 from .context import PipelineContext
 from .downloader import HTTPDownloader
 from .errors import (
@@ -46,10 +52,16 @@ from .models import (
     Status,
 )
 from .modrinth import ModrinthClient, parse_slug
-from .providers import PROVIDERS, FillPaperProvider, search_hangar_projects
-from .recommend import recommend_plugin
+from .providers import (
+    PROVIDERS,
+    FillPaperProvider,
+    fetch_newest_stable_build,
+    fetch_paper_versions,
+    search_hangar_projects,
+)
+from .recommend import asset_template, recommend_plugin
 from .resolvers import select_resolver
-from .wizard import Prompter, run_init
+from .wizard import Prompter, QuestionaryPrompter, run_init
 
 _log = logging.getLogger("rocket")
 
@@ -168,6 +180,28 @@ def main(
         default="server.toml",
         help="path to the config file (default: ./server.toml)",
     )
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="Check for newer versions, pick what to bump, then download",
+    )
+    upgrade_parser.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=("all", "plugins", "core"),
+        help="what to upgrade (default: all)",
+    )
+    upgrade_parser.add_argument(
+        "--config",
+        default="server.toml",
+        help="path to the config file (default: ./server.toml)",
+    )
+    upgrade_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="apply every available update without prompting "
+        "(core jumps to the newest Minecraft line)",
+    )
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(
@@ -191,6 +225,15 @@ def main(
         )
     if args.command == "remove":
         return run_remove(args.plugin_id, config_path=Path(args.config))
+    if args.command == "upgrade":
+        return run_upgrade(
+            args.target,
+            force=args.force,
+            config_path=Path(args.config),
+            transport=transport,
+            sleep=sleep,
+            prompter=prompter,
+        )
     return run_download(
         Path(args.config),
         transport=transport,
@@ -566,9 +609,10 @@ def run_download(
     """Run one download; return the process exit code (0 all ok, 1 failures, 2 invalid config)."""
     handler = install_logging(logging.INFO if verbose else logging.WARNING)
     try:
-        return _run_download(
+        code, _failed_ids = _run_download(
             config_path, transport=transport, sleep=sleep, verbose=verbose, upgrade=upgrade
         )
+        return code
     finally:
         remove_logging(handler)
 
@@ -580,12 +624,18 @@ def _run_download(
     sleep: Callable[[float], None],
     verbose: bool,
     upgrade: bool,
-) -> int:
+    refresh: frozenset[str] = frozenset(),
+) -> tuple[int, tuple[str, ...]]:
+    """Run one download; return the exit code and the ids of the items that failed.
+
+    ``refresh`` excludes the given item ids from lock reuse (``rocket upgrade`` uses it to
+    re-resolve the Paper build without touching the plugin entries).
+    """
     try:
         config = load_config(config_path)
     except RocketError as exc:
         print_error(exc.message, hint=exc.hint)
-        return exc.exit_code
+        return exc.exit_code, ()
     for warning in config.warnings:
         _log.warning("config warning: %s", warning)
 
@@ -594,10 +644,16 @@ def _run_download(
     for warning in lock_warnings:
         _log.warning("lock warning: %s", warning)
     reuse_lock = None if upgrade else previous_lock
+    if reuse_lock is not None and refresh:
+        reuse_lock = LockData(
+            paper=None if "paper" in refresh else reuse_lock.paper,
+            plugins={key: value for key, value in reuse_lock.plugins.items() if key not in refresh},
+        )
 
     entries: list[DownloadResult] = []
     fresh_entries: dict[str, LockedEntry] = {}
     failures = 0
+    failed_ids: list[str] = []
     resolved = 0
     resolve_seconds = 0.0
     download_seconds = 0.0
@@ -627,10 +683,12 @@ def _run_download(
                     artifact = _resolve_artifact(item, config, context)
             except RocketError as exc:
                 failures += 1
+                failed_ids.append(item.id)
                 _print_item_error(item.id, exc)
                 continue
             except Exception as exc:
                 failures += 1
+                failed_ids.append(item.id)
                 _print_unexpected_error(item.id, exc)
                 continue
             resolve_seconds += time.perf_counter() - started
@@ -645,9 +703,11 @@ def _run_download(
             outcome = by_index[index]
             if isinstance(outcome, RocketError):
                 failures += 1
+                failed_ids.append(pending[index].artifact_id)
                 _print_item_error(pending[index].artifact_id, outcome)
             elif isinstance(outcome, Exception):
                 failures += 1
+                failed_ids.append(pending[index].artifact_id)
                 _print_unexpected_error(pending[index].artifact_id, outcome)
             else:
                 entries.append(outcome)
@@ -670,7 +730,7 @@ def _run_download(
     )
     for result in entries:
         _print_item_result(result, verbose=verbose, term=term)
-    return EXIT_FAILURE if failures else EXIT_OK
+    return EXIT_FAILURE if failures else EXIT_OK, tuple(failed_ids)
 
 
 def _download_all(
@@ -719,6 +779,335 @@ def _download_all(
                     outcomes[index] = exc
                 progress.update(1)
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# rocket upgrade
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CoreCandidates:
+    """Available Paper core upgrades, smallest to largest."""
+
+    build: int | None  # newer STABLE build for the same Minecraft version
+    patch: str | None  # newest release of the current Fill version group
+    patch_group: str | None
+    major: str | None  # newest release of a newer Fill version group
+    major_group: str | None
+
+
+@dataclass(frozen=True)
+class _CoreChoice:
+    """The user's pick: a newer build of the same release, or a newer Minecraft release."""
+
+    kind: str  # "build" or "mc"
+    value: int | str
+
+
+@dataclass(frozen=True)
+class _PluginUpdate:
+    """A plugin whose pinned version/asset differs from the current recommendation."""
+
+    plugin: PluginConfig
+    version: str
+    asset: str | None
+    note: str
+
+
+def run_upgrade(
+    target: str,
+    *,
+    force: bool,
+    config_path: Path,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    prompter: Prompter | None = None,
+) -> int:
+    """Check for newer versions, pick what to bump, rewrite server.toml and download.
+
+    Returns 0 when everything applied (or nothing needed doing), 1 on check/download
+    failures, 2 on invalid config. ``transport``/``sleep``/``prompter`` are only for
+    test injection.
+    """
+    if prompter is None and not force:
+        if not stdin_is_tty():
+            print_error(
+                "rocket upgrade is interactive; run it in a terminal",
+                hint="or pass --force to apply every available update without prompting",
+            )
+            return EXIT_FAILURE
+        prompter = QuestionaryPrompter()
+    handler = install_logging()
+    try:
+        return _run_upgrade(
+            target,
+            force=force,
+            config_path=config_path,
+            transport=transport,
+            sleep=sleep,
+            prompter=prompter,
+        )
+    finally:
+        remove_logging(handler)
+
+
+def _run_upgrade(
+    target: str,
+    *,
+    force: bool,
+    config_path: Path,
+    transport: httpx.BaseTransport | None,
+    sleep: Callable[[float], None],
+    prompter: Prompter | None,
+) -> int:
+    try:
+        config = load_config(config_path)
+    except RocketError as exc:
+        print_error(exc.message, hint=exc.hint)
+        return exc.exit_code
+    for warning in config.warnings:
+        _log.warning("config warning: %s", warning)
+
+    print(
+        f"Checking updates for Paper {config.paper.version} "
+        f"+ {_plural(len(config.plugins), 'plugin')}..."
+    )
+    check_failed = False
+    with HTTPClient(
+        user_agent=config.http.user_agent,
+        timeout_seconds=config.http.timeout_seconds,
+        retries=config.http.retries,
+        transport=transport,
+        sleep=sleep,
+        github_token=os.environ.get("GITHUB_TOKEN"),
+    ) as http:
+        core_choice: _CoreChoice | None = None
+        if target in ("all", "core"):
+            try:
+                candidates = _core_candidates(config, http=http)
+            except RocketError as exc:
+                check_failed = True
+                print_error(f"core: {exc.message}", hint=exc.hint)
+            except Exception as exc:
+                check_failed = True
+                _print_unexpected_error("core", exc)
+            else:
+                core_choice = _choose_core(
+                    config.paper.version, candidates, force=force, prompter=prompter
+                )
+
+        new_mc = (
+            str(core_choice.value) if core_choice is not None and core_choice.kind == "mc" else None
+        )
+        updates: list[_PluginUpdate] = []
+        if target in ("all", "plugins"):
+            updates, plugin_check_failed = _check_plugin_updates(
+                config, minecraft_version=new_mc or config.paper.version, http=http
+            )
+            check_failed = check_failed or plugin_check_failed
+            if updates and not force:
+                if prompter is None:  # unreachable: the guard in run_upgrade provides one
+                    raise RocketError("internal error: interactive upgrade requires a prompter")
+                chosen = set(
+                    prompter.checkbox(
+                        "Plugins to upgrade",
+                        [(_update_title(update), update.plugin.id) for update in updates],
+                    )
+                )
+                updates = [update for update in updates if update.plugin.id in chosen]
+
+    paper_pin: PaperPin | None = None
+    original_paper_pin: PaperPin | None = None
+    refresh: frozenset[str] = frozenset()
+    if core_choice is not None:
+        original_paper_pin = PaperPin(version=config.paper.version, build=config.paper.build)
+        if core_choice.kind == "build":
+            if config.paper.build is not None:
+                paper_pin = PaperPin(version=config.paper.version, build=int(core_choice.value))
+            else:
+                # an unpinned build re-resolves to the newest STABLE build; the lock
+                # entry is the only thing keeping the old one
+                refresh = frozenset({"paper"})
+        else:
+            # a build pin belongs to its Minecraft release; it never carries over
+            paper_pin = PaperPin(version=str(core_choice.value), build=None)
+
+    plugin_pins = {
+        update.plugin.id: PluginPin(version=update.version, asset=update.asset)
+        for update in updates
+    }
+    if paper_pin is None and not plugin_pins and not refresh:
+        if not check_failed:
+            print("everything is up to date")
+        return EXIT_FAILURE if check_failed else EXIT_OK
+
+    if paper_pin is not None or plugin_pins:
+        update_version_pins(config_path, paper=paper_pin, plugins=plugin_pins)
+    exit_code, failed_ids = _run_download(
+        config_path,
+        transport=transport,
+        sleep=sleep,
+        verbose=False,
+        upgrade=False,
+        refresh=refresh,
+    )
+
+    rolled_back = 0
+    if failed_ids:
+        rollback_paper = (
+            original_paper_pin if paper_pin is not None and "paper" in failed_ids else None
+        )
+        originals = {
+            update.plugin.id: PluginPin(version=update.plugin.version, asset=update.plugin.asset)
+            for update in updates
+        }
+        rollback_plugins = {
+            plugin_id: originals[plugin_id] for plugin_id in failed_ids if plugin_id in originals
+        }
+        if rollback_paper is not None or rollback_plugins:
+            update_version_pins(config_path, paper=rollback_paper, plugins=rollback_plugins)
+            rolled_back = len(rollback_plugins) + (1 if rollback_paper is not None else 0)
+            print(f"rolled back {_plural(rolled_back, 'pin')} to the previous version")
+
+    core_moved = target == "core" and new_mc is not None and "paper" not in failed_ids
+    if core_moved:
+        print(
+            f"next: rocket upgrade plugins   # re-check plugin compatibility "
+            f"with Minecraft {new_mc}"
+        )
+    return EXIT_FAILURE if check_failed or exit_code != EXIT_OK else EXIT_OK
+
+
+def _core_candidates(config: Config, *, http: HTTPClient) -> _CoreCandidates:
+    """Compute the build/patch/major upgrade options for the configured Paper release."""
+    groups = fetch_paper_versions(http)
+    current = config.paper.version
+    current_build = config.paper.build
+    if current_build is None:
+        lock, _lock_warnings = load_lock(config.path.parent / LOCK_FILENAME)
+        if lock is not None and lock.paper is not None:
+            current_build = lock.paper.build
+
+    build = None
+    if current_build is not None:
+        newest = fetch_newest_stable_build(http, current)
+        if newest is not None and newest > current_build:
+            build = newest
+
+    patch = patch_group = major = major_group = None
+    for group, members in groups.items():
+        stable = [member for member in members if "-rc" not in member and "-pre" not in member]
+        if current in stable:
+            newer = stable[: stable.index(current)]
+            if newer:
+                patch, patch_group = newer[0], group
+            break  # groups are newest-line-first; anything beyond is older
+        if stable and major is None:
+            major, major_group = stable[0], group
+    return _CoreCandidates(
+        build=build, patch=patch, patch_group=patch_group, major=major, major_group=major_group
+    )
+
+
+def _choose_core(
+    current: str, candidates: _CoreCandidates, *, force: bool, prompter: Prompter | None
+) -> _CoreChoice | None:
+    options: list[tuple[str, _CoreChoice]] = []
+    if candidates.build is not None:
+        options.append(
+            (
+                f"build {candidates.build} (same Minecraft {current}, newer Paper build)",
+                _CoreChoice(kind="build", value=candidates.build),
+            )
+        )
+    if candidates.patch is not None:
+        options.append(
+            (
+                f"{candidates.patch} (newest patch of the {candidates.patch_group} line)",
+                _CoreChoice(kind="mc", value=candidates.patch),
+            )
+        )
+    if candidates.major is not None:
+        options.append(
+            (
+                f"{candidates.major} (new Minecraft line {candidates.major_group})",
+                _CoreChoice(kind="mc", value=candidates.major),
+            )
+        )
+    if not options:
+        return None
+    if force:
+        return options[-1][1]  # --force: the full jump
+    if prompter is None:  # unreachable: the guard in run_upgrade provides one
+        raise RocketError("internal error: interactive upgrade requires a prompter")
+    keep = "keep"
+    choices = [(title, str(index)) for index, (title, _choice) in enumerate(options)]
+    choices.append((f"keep {current}", keep))
+    picked = prompter.select(f"Paper core (current: {current})", choices, default="0")
+    if picked == keep:
+        return None
+    return options[int(picked)][1]
+
+
+def _check_plugin_updates(
+    config: Config, *, minecraft_version: str, http: HTTPClient
+) -> tuple[list[_PluginUpdate], bool]:
+    """Compare every plugin pin with the current recommendation; failures are reported."""
+    updates: list[_PluginUpdate] = []
+    failed = False
+    for plugin in config.plugins:
+        if plugin.provider == "github":
+            print(
+                f"note: {plugin.id} (github) pins an exact tag; "
+                "bump it by hand or re-run rocket add"
+            )
+            continue
+        template = None
+        if plugin.asset is not None:
+            # config.asset is a concrete filename of the pinned version; the catalog
+            # form is a template with {version}
+            template = asset_template(plugin.asset, plugin.version)
+        try:
+            recommended = recommend_plugin(
+                plugin.provider,
+                plugin.project,
+                asset=template,
+                minecraft_version=minecraft_version,
+                http=http,
+            )
+        except RocketError as exc:
+            failed = True
+            print_error(f"{plugin.id}: {exc.message}", hint=exc.hint)
+            continue
+        except Exception as exc:
+            failed = True
+            _print_unexpected_error(plugin.id, exc)
+            continue
+        if recommended.version != plugin.version or recommended.asset != plugin.asset:
+            updates.append(
+                _PluginUpdate(
+                    plugin=plugin,
+                    version=recommended.version,
+                    asset=recommended.asset,
+                    note=recommended.note,
+                )
+            )
+    return updates, failed
+
+
+def _update_title(update: _PluginUpdate) -> str:
+    plugin = update.plugin
+    if update.version != plugin.version:
+        title = f"{plugin.id}: {plugin.version} → {update.version} ({plugin.provider})"
+    else:
+        title = (
+            f"{plugin.id}: {plugin.version} "
+            f"(asset: {plugin.asset} → {update.asset}) ({plugin.provider})"
+        )
+    if update.note:
+        title += f" — {update.note}"
+    return title
 
 
 def _iter_items(config: Config) -> list[_Item]:

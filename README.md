@@ -10,6 +10,7 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 - Finds plugins on Hangar and Modrinth by keyword (`rocket search`), one ranked list with
   cmd+clickable project links on a TTY;
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
+- Bumps Paper builds, Minecraft releases and plugin versions interactively (`rocket upgrade`);
 - Concurrent downloads (up to 4 at once) with a single live progress bar on a TTY;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
@@ -168,6 +169,34 @@ wrote server.toml
 next: rocket download
 ```
 
+## Upgrading (`rocket upgrade`)
+
+`rocket upgrade` checks every pin for updates, lets you pick what to apply, then rewrites
+`server.toml` and downloads in one go:
+
+```bash
+rocket upgrade            # core + plugins, interactively
+rocket upgrade plugins    # plugins only
+rocket upgrade core       # the Paper server only
+rocket upgrade --force    # apply everything without prompting
+```
+
+- **Core upgrades come in three sizes**: a newer Paper build of the same Minecraft release
+  (`1.21.11` build 42 → 57), a patch of the current release line (`1.21.11` → `1.21.12`) and a
+  new Minecraft line (`1.21.x` → `26.1.x`). The prompt defaults to the smallest available jump;
+  `--force` takes the newest Minecraft line. A pinned `build` is bumped in `server.toml`; an
+  unpinned build needs no edit — its lock entry is simply re-resolved. A `build` pin never
+  carries over to a new Minecraft release.
+- **Plugin upgrades** compare each pin with the newest version the download pipeline could use
+  (the same recommendation `rocket add` makes). With `rocket upgrade`, the check runs against
+  the Minecraft version you are moving to. GitHub entries pin an exact tag by design and are
+  skipped with a note.
+- **Per-item atomicity**: the selected bumps are written to `server.toml` first; an item whose
+  download then fails has its pin rolled back to the previous version, so the config, the lock
+  and the files on disk always agree. Everything else stays upgraded and the run exits `1`.
+- Without `--force` the command is interactive (like `rocket init`) and refuses to run off a
+  terminal.
+
 ## Run from a source checkout
 
 ```bash
@@ -234,7 +263,8 @@ Constraints:
   verified against the locked checksum and JAR structure. A changed config field invalidates only that
   entry, which is re-resolved and rewritten.
 - `rocket download --upgrade` ignores the lock file, re-resolves every item (for example to move to a
-  newer Paper build or a re-published GitHub tag), and rewrites the lock.
+  newer Paper build or a re-published GitHub tag), and rewrites the lock. For bumping the pinned
+  versions themselves, use `rocket upgrade`.
 - A lock file that is malformed, has an unsupported `version`, or contains a broken entry is reported
   as a `lock warning`; the affected items are re-resolved and the lock is rewritten.
 - `rocket.lock` is the only state file rocket reads or writes; there is no `server.lock.*` or hidden cache.
@@ -383,13 +413,13 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 ```
 src/rocket/
   __main__.py     python -m rocket entry point
-  cli.py          download/init/search/add/remove subcommands, per-item results, exit codes
+  cli.py          download/init/search/add/remove/upgrade subcommands, per-item results, exit codes
   wizard.py       init: interactive prompts, recommendations and server.toml output
   catalog.py      init: curated default plugin catalog
   recommend.py    init/add: newest usable version per plugin
   console.py      shared styling and error-printing helpers
   config.py       server.toml parsing and strict validation
-  config_edit.py  add/remove: textual [plugins.<id>] section edits with round-trip checks
+  config_edit.py  add/remove/upgrade: textual [plugins.<id>] section and version-pin edits with round-trip checks
   models.py       shared models (entry/Release/Artifact/result)
   providers.py    Fill (Paper), Hangar, GitHub providers
   resolvers.py    Direct / GitHubRelease resolvers and auto selection
