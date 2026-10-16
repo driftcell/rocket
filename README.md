@@ -326,7 +326,7 @@ data only and is never executed.
 | `questionary` | interactive prompts for `rocket init` |
 | `tomli-w` | writing server.toml from `rocket init` (reading still uses the standard library) |
 | `tqdm` | the single download progress bar; disables itself off a TTY, so CI and scripts see plain output |
-| `blessed` | terminal styling and OSC 8 hyperlinks for `rocket search`; disables itself off a TTY |
+| `blessed` | terminal styling and OSC 8 hyperlinks (search results, download lines, error hints); disables itself off a TTY |
 | standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, `concurrent.futures`, etc. |
 
 ## Tests

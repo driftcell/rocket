@@ -15,7 +15,7 @@ import tomli_w
 
 from . import USER_AGENT
 from .catalog import DEFAULT_PLUGINS, CatalogPlugin
-from .console import install_logging, print_error, remove_logging
+from .console import install_logging, print_error, remove_logging, terminal
 from .errors import EXIT_FAILURE, EXIT_OK, RocketError
 from .http_client import HTTPClient
 from .recommend import (
@@ -223,8 +223,9 @@ def _report(result: RecommendationResult, *, selected: int, paper_version: str) 
     for skipped in result.skipped:
         _log.warning("[%s] skipped: %s", skipped.id, skipped.reason)
     print(f"Resolved {len(result.plugins)} of {selected} plugins for Paper {paper_version}")
+    term = terminal()
     for plugin in result.plugins:
-        print(f"  + {plugin.id} {plugin.version} ({plugin.provider})")
+        print(f"  {term.green('+')} {plugin.id} {plugin.version} ({plugin.provider})")
 
 
 def build_config_text(*, paper_version: str, plugins: Sequence[RecommendedPlugin]) -> str:
