@@ -9,6 +9,7 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 - Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
 - Finds plugins on Hangar and Modrinth by keyword (`rocket search`);
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
+- Concurrent downloads (up to 4 at once) with a single live progress bar on a TTY;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
 - Writes a `rocket.lock` pinning the resolved Paper build and plugin artifacts, reused by later runs.
@@ -283,6 +284,9 @@ refused to overwrite an existing file (use `--force`). `rocket search` uses `0` 
 
 - A matching `rocket.lock` entry skips the provider query; the locked URL, size and checksum are used
   instead, and `--upgrade` is the only way an item is re-resolved.
+- Resolution runs sequentially in config order; downloads then run concurrently (up to 4 at once).
+  On a TTY a single progress bar shows completed items and transferred bytes and is erased when the
+  phase ends; off a TTY it stays silent. Per-item result lines are always printed in config order.
 - When the currently selected artifact has an upstream checksum (SHA-256 for Fill/Hangar/GitHub, SHA-512
   for Modrinth) and the existing target file passes hash and JAR validation: the download is skipped.
 - Without an upstream hash: a file is not skipped just because it exists; it is re-downloaded to a
@@ -313,7 +317,8 @@ data only and is never executed.
 | `tenacity` | bounded retries and exponential backoff (network errors, 429, 5xx; respects `Retry-After`, capped at 60 seconds) |
 | `questionary` | interactive prompts for `rocket init` |
 | `tomli-w` | writing server.toml from `rocket init` (reading still uses the standard library) |
-| standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, etc. |
+| `tqdm` | the single download progress bar; disables itself off a TTY, so CI and scripts see plain output |
+| standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, `concurrent.futures`, etc. |
 
 ## Tests
 
@@ -354,7 +359,7 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 - Modrinth requires an exact `version_number` and never queries latest; file hashes prefer the upstream
   SHA-512 (Modrinth provides no SHA-256), and when only sha1 is available the file is treated as having
   no strong checksum, with a warning.
-- No resumable downloads, parallel downloads or full on-disk caching; a retry re-downloads the entire file.
+- No resumable downloads or full on-disk caching; a retry re-downloads the entire file.
 - The lock records upstream metadata only: an artifact without an upstream checksum (for example a GitHub
   Release whose asset has no `digest`) is re-downloaded and locally verified on every run.
 - No dependency resolution or automatic installation; only required dependencies declared by Hangar are reported.

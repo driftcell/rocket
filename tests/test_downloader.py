@@ -115,6 +115,45 @@ def test_download_success_atomic(tmp_path: Path) -> None:
     assert list(target.parent.iterdir()) == [target]
 
 
+def test_download_reports_chunk_progress(tmp_path: Path) -> None:
+    jar = make_plugin_jar_bytes()
+    api = FakeAPI()
+    api.add_bytes(URL, jar)
+    target = tmp_path / "plugins" / "demo.jar"
+    deltas: list[int] = []
+    with make_http(api) as http:
+        downloader = HTTPDownloader(http, retries=0, sleep=lambda _: None)
+        result = downloader.fetch(
+            make_artifact(target, sha256=sha256_hex(jar), size=len(jar)),
+            on_bytes=deltas.append,
+        )
+
+    assert result.status is Status.DOWNLOADED
+    assert deltas, "on_bytes was never called"
+    assert all(delta > 0 for delta in deltas)
+    assert sum(deltas) == len(jar)
+    assert target.read_bytes() == jar
+
+
+def test_download_skip_reports_no_progress(tmp_path: Path) -> None:
+    jar = make_plugin_jar_bytes()
+    api = FakeAPI()
+    api.add_bytes(URL, jar)
+    target = tmp_path / "plugins" / "demo.jar"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(jar)
+    deltas: list[int] = []
+    with make_http(api) as http:
+        downloader = HTTPDownloader(http, retries=0, sleep=lambda _: None)
+        result = downloader.fetch(
+            make_artifact(target, sha256=sha256_hex(jar), size=len(jar)),
+            on_bytes=deltas.append,
+        )
+
+    assert result.status is Status.SKIPPED
+    assert deltas == []
+
+
 def test_download_without_upstream_hash_marks_unverified(tmp_path: Path) -> None:
     jar = make_plugin_jar_bytes()
     api = FakeAPI()

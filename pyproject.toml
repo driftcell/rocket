@@ -12,6 +12,7 @@ dependencies = [
     "questionary>=2.1.1",
     "tenacity>=9.2.1",
     "tomli-w>=1.2.0",
+    "tqdm>=4.66.0",
 ]
 
 [project.scripts]
