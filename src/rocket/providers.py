@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from .config import PaperConfig, PluginConfig
 from .context import PipelineContext
@@ -23,6 +23,7 @@ from .models import (
     EntryKind,
     GitHubCoordinates,
     ReleaseInfo,
+    SearchResult,
 )
 from .modrinth import check_loaders, parse_slug, select_file, select_version
 
@@ -373,6 +374,49 @@ class HangarProvider(PluginProvider):
         )
 
 
+def search_hangar_projects(http: HTTPClient, query: str, *, limit: int) -> tuple[SearchResult, ...]:
+    """Search Hangar projects by keyword, most downloaded first."""
+    params = urlencode({"query": query, "limit": str(limit), "offset": "0", "sort": "-downloads"})
+    payload = http.get_json(f"{_HANGAR_BASE}/projects?{params}")
+    if not isinstance(payload, dict):
+        raise ProviderError("Hangar search response has invalid structure (expected object)")
+    items = payload.get("result")
+    if not isinstance(items, list):
+        raise ProviderError(
+            "Hangar search response is missing the result field",
+            hint=(
+                "the upstream response contract may have changed; "
+                "update the adapter instead of guessing"
+            ),
+        )
+    results: list[SearchResult] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        namespace = item.get("namespace")
+        owner = namespace.get("owner") if isinstance(namespace, dict) else None
+        slug = namespace.get("slug") if isinstance(namespace, dict) else None
+        name = item.get("name")
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or not isinstance(slug, str)
+            or not slug
+            or not isinstance(name, str)
+            or not name
+        ):
+            continue
+        results.append(
+            SearchResult(
+                provider="hangar",
+                project=f"{owner}/{slug}",
+                name=name,
+                description=_one_line(item.get("description")),
+            )
+        )
+    return tuple(results)
+
+
 class GitHubProvider(PluginProvider):
     """GitHub Releases REST API (exact tag queries)."""
 
@@ -527,3 +571,7 @@ def _summarize_versions(versions: set[str]) -> str:
     if len(ordered) > 20:
         return ", ".join(ordered[:20]) + f" ... ({len(ordered)} total)"
     return ", ".join(ordered)
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(value.split()) if isinstance(value, str) else ""

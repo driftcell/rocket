@@ -337,6 +337,49 @@ def modrinth_versions_url(slug: str) -> str:
     return f"https://api.modrinth.com/v2/project/{slug}/version"
 
 
+def hangar_search_url(query: str, *, limit: int = 5) -> str:
+    params = urlencode({"query": query, "limit": str(limit), "offset": "0", "sort": "-downloads"})
+    return f"https://hangar.papermc.io/api/v1/projects?{params}"
+
+
+def modrinth_search_url(query: str, *, limit: int = 5) -> str:
+    params = urlencode({"query": query, "limit": str(limit), "index": "downloads"})
+    return f"https://api.modrinth.com/v2/search?{params}"
+
+
+def hangar_search_payload(items: list[object]) -> dict[str, object]:
+    return {
+        "pagination": {"count": len(items), "limit": len(items), "offset": 0},
+        "result": items,
+    }
+
+
+def hangar_search_item(
+    *, owner: str, slug: str, name: str, description: str = ""
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "namespace": {"owner": owner, "slug": slug},
+        "description": description,
+        "stats": {"downloads": 1234},
+    }
+
+
+def modrinth_search_payload(hits: list[object]) -> dict[str, object]:
+    return {"hits": hits, "offset": 0, "limit": len(hits), "total_hits": len(hits)}
+
+
+def modrinth_search_hit(*, slug: str, title: str, description: str = "") -> dict[str, object]:
+    return {
+        "project_id": slug[:8],
+        "slug": slug,
+        "title": title,
+        "description": description,
+        "project_type": "mod",
+        "downloads": 4321,
+    }
+
+
 def modrinth_project_payload(*, slug: str) -> dict[str, object]:
     return {"slug": slug, "title": slug.title(), "project_type": "mod"}
 
