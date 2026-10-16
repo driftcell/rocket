@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rocket.catalog import asset_template
 from rocket.cli import main
-from rocket.recommend import asset_template
 
 from .helpers import (
     FILL_PROJECTS_URL,

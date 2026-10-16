@@ -439,13 +439,13 @@ src/rocket/
   __main__.py     python -m rocket entry point
   cli.py          download/init/search/add/remove/upgrade/pin subcommands, per-item results, exit codes
   wizard.py       init: interactive prompts, recommendations and server.toml output
-  catalog.py      init: curated default plugin catalog
-  recommend.py    init/add: newest usable version per plugin
+  catalog.py      init: curated default plugin catalog + {version} asset templates
+  recommend.py    init/add/upgrade: per-catalog recommendation orchestration
   console.py      shared styling and error-printing helpers
   config.py       server.toml parsing and strict validation
   config_edit.py  add/remove/upgrade: textual [plugins.<id>] section and version-pin edits with round-trip checks
   models.py       shared models (entry/Release/Artifact/result)
-  providers.py    Fill (Paper), Hangar, GitHub providers
+  providers.py    the provider trait + Fill (Paper), Hangar, GitHub, Modrinth implementations
   resolvers.py    Direct / GitHubRelease resolvers and auto selection
   github.py       GitHub Release client, attachment selection, URL classification
   modrinth.py     Modrinth API client, version/file selection

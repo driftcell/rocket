@@ -352,6 +352,24 @@ version = "24.1"
     assert config.plugins[0].project == "coreprotect"
 
 
+def test_provider_choices_match_the_registry(tmp_path: Path) -> None:
+    """config accepts every registered provider; the two lists must not drift apart."""
+    from rocket.providers import PROVIDERS
+
+    for name in PROVIDERS:
+        text = (
+            MINIMAL
+            + f"""
+[plugins.demo]
+provider = "{name}"
+project = "Owner/Demo"
+version = "1.0.0"
+"""
+        )
+        config = load_config(write_config(tmp_path, text))
+        assert config.plugins[0].provider == name
+
+
 def test_server_section_is_rejected(tmp_path: Path) -> None:
     # server-init was removed; [server] is no longer part of the config schema.
     text = MINIMAL + '\n[server]\ndir = "./server"\n'

@@ -116,3 +116,28 @@ DEFAULT_PLUGINS: tuple[CatalogPlugin, ...] = (
         assets=("Vault.jar",),
     ),
 )
+
+
+def asset_template(asset: str, version: str) -> str:
+    """Recover a catalog-style ``{version}`` template from a concrete pinned filename.
+
+    Filenames do not always spell the version tag literally (``v5.5.60`` may appear as
+    ``5.5.60``), so every filename form of the pinned version is tried.
+    """
+    for form in version_forms(version):
+        if form in asset:
+            return asset.replace(form, "{version}")
+    return asset
+
+
+def version_forms(version: str) -> tuple[str, ...]:
+    """Filename spellings of a version tag: itself, without a ``v`` prefix, without suffixes."""
+    forms = [version]
+    unv = version[1:] if version.startswith("v") else version
+    if unv != version:
+        forms.append(unv)
+    for base in (version, unv):
+        stem = base.split("-", 1)[0]
+        if stem and stem not in forms:
+            forms.append(stem)
+    return tuple(forms)

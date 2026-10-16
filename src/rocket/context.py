@@ -13,18 +13,38 @@ from .modrinth import ModrinthClient
 
 
 @dataclass
-class PipelineContext:
-    """Clients, target version and output directory shared within one run."""
+class ProviderClients:
+    """HTTP client facades and the logger shared by provider operations within one run.
+
+    Lives outside the download pipeline too (search/add/pin have no output directory or
+    target version at construction time), so those are layered on in the subclass.
+    """
 
     http: HTTPClient
     github: GitHubClient
     modrinth: ModrinthClient
+    log: logging.Logger
+
+
+@dataclass
+class PipelineContext(ProviderClients):
+    """Clients plus the run-wide target Minecraft version and output directory."""
+
     minecraft_version: str
     output_dir: Path
-    log: logging.Logger
 
     def target_path(self, artifact_id: str, kind: ArtifactKind) -> Path:
         """Local target paths are derived from the id, never from remote filenames."""
         if kind is ArtifactKind.PAPER:
             return self.output_dir / "paper.jar"
         return self.output_dir / "plugins" / f"{artifact_id}.jar"
+
+
+def provider_clients(http: HTTPClient) -> ProviderClients:
+    """The shared client bundle for provider operations outside the download pipeline."""
+    return ProviderClients(
+        http=http,
+        github=GitHubClient(http),
+        modrinth=ModrinthClient(http),
+        log=logging.getLogger("rocket"),
+    )

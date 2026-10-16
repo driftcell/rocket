@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from blessed import Terminal
 
 from . import USER_AGENT, __version__
+from .catalog import asset_template
 from .config import Config, PluginConfig, is_valid_plugin_id, load_config
 from .config_edit import (
     PaperPin,
@@ -29,7 +30,7 @@ from .config_edit import (
     update_version_pins,
 )
 from .console import install_logging, print_error, remove_logging, stdin_is_tty, terminal
-from .context import PipelineContext
+from .context import PipelineContext, provider_clients
 from .downloader import HTTPDownloader
 from .errors import (
     EXIT_FAILURE,
@@ -39,7 +40,7 @@ from .errors import (
     ProviderError,
     RocketError,
 )
-from .github import GitHubClient, parse_project
+from .github import GitHubClient
 from .http_client import HTTPClient
 from .lockfile import LOCK_FILENAME, LockData, LockedEntry, load_lock, write_lock
 from .models import (
@@ -52,25 +53,15 @@ from .models import (
     SearchResult,
     Status,
 )
-from .modrinth import ModrinthClient, parse_slug
+from .modrinth import ModrinthClient
 from .providers import (
     PROVIDERS,
     FillPaperProvider,
     fetch_newest_stable_build,
     fetch_paper_versions,
     fetch_stable_build_ids,
-    search_hangar_projects,
 )
-from .recommend import (
-    asset_template,
-    github_release_file_choices,
-    hangar_version_file_choices,
-    list_github_releases,
-    list_hangar_versions,
-    list_modrinth_versions,
-    modrinth_version_file_choices,
-    recommend_plugin,
-)
+from .recommend import recommend_plugin
 from .resolvers import select_resolver
 from .wizard import Prompter, QuestionaryPrompter, run_init
 
@@ -283,7 +274,7 @@ def run_search(
     transport: httpx.BaseTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
-    """Search Hangar and Modrinth; return 0 when the search ran, 1 when a provider failed.
+    """Search every searchable provider; return 0 when the search ran, 1 when one failed.
 
     ``transport``/``sleep`` are only for test injection.
     """
@@ -307,30 +298,24 @@ def _run_search(
     results: list[SearchResult] = []
     failures = 0
     with HTTPClient(user_agent=USER_AGENT, transport=transport, sleep=sleep) as http:
-        searches = (
-            ("hangar", lambda: search_hangar_projects(http, query, limit=_SEARCH_LIMIT)),
-            ("modrinth", lambda: ModrinthClient(http).search_projects(query, limit=_SEARCH_LIMIT)),
-        )
-        for provider, search in searches:
+        clients = provider_clients(http)
+        for provider_class in PROVIDERS.values():
+            if not provider_class.supports_search:
+                continue
+            provider = provider_class(clients)
             try:
-                results.extend(search())
+                results.extend(provider.search(query, limit=_SEARCH_LIMIT))
             except RocketError as exc:
                 failures += 1
-                print_error(f"{provider}: {exc.message}", hint=exc.hint)
+                print_error(f"{provider.name}: {exc.message}", hint=exc.hint)
             except Exception as exc:
                 failures += 1
-                _print_unexpected_error(provider, exc)
+                _print_unexpected_error(provider.name, exc)
     if results:
         _print_search_results(results)
     elif not failures:
         print(f"no plugins found for {query!r}")
     return EXIT_FAILURE if failures else EXIT_OK
-
-
-_SEARCH_PAGE_URL = {
-    "hangar": "https://hangar.papermc.io/{project}",
-    "modrinth": "https://modrinth.com/project/{project}",
-}
 
 
 def _print_search_results(results: list[SearchResult]) -> None:
@@ -358,7 +343,7 @@ def _print_search_results(results: list[SearchResult]) -> None:
         # A name that merely restyles the slug ("EssentialsX" vs "essentialsx") adds no
         # information; lead with the spec instead so long owner/name pairs still fit.
         title, tail = (result.name, f" — {spec}{meta}") if _name_adds_info(result) else (spec, meta)
-        page_url = _SEARCH_PAGE_URL[result.provider].format(project=result.project)
+        page_url = PROVIDERS[result.provider].page_url(result.project)
         print("  " + term.link(page_url, term.bold(title)) + term.dim(tail))
         description = result.description
         if description:
@@ -497,10 +482,7 @@ def _parse_add_spec(spec: str) -> tuple[str, str]:
             f"unknown provider: {provider!r}",
             hint=f"available providers: {', '.join(PROVIDERS)}",
         )
-    if provider == "modrinth":
-        project = parse_slug(project, field_path="spec")
-    else:
-        parse_project(project, field_path="spec")
+    project = PROVIDERS[provider].parse_project(project, field_path="spec")
     return provider, project
 
 
@@ -1118,11 +1100,9 @@ def _check_plugin_updates(
     updates: list[_PluginUpdate] = []
     failed = False
     for plugin in config.plugins:
-        if plugin.provider == "github":
-            print(
-                f"note: {plugin.id} (github) pins an exact tag; "
-                "bump it by hand or re-run rocket add"
-            )
+        upgrade_note = PROVIDERS[plugin.provider].upgrade_note
+        if upgrade_note is not None:
+            print(f"note: {plugin.id} ({plugin.provider}) {upgrade_note}")
             continue
         template = None
         if plugin.asset is not None:
@@ -1351,20 +1331,8 @@ def _pin_plugin(
 ) -> PluginPin | None:
     """Exact version (and file, when ambiguous) for one plugin; None = no change."""
     minecraft_version = config.paper.version
-    modrinth = ModrinthClient(http)
-    github = GitHubClient(http)
-    if plugin.provider == "hangar":
-        versions = list_hangar_versions(
-            http, project=plugin.project, minecraft_version=minecraft_version
-        )
-    elif plugin.provider == "modrinth":
-        versions = list_modrinth_versions(
-            modrinth, plugin.project, minecraft_version=minecraft_version
-        )
-    elif plugin.provider == "github":
-        versions = [(tag, "release") for tag in list_github_releases(github, plugin.project)]
-    else:
-        raise RocketError(f"internal error: unsupported provider {plugin.provider!r}")
+    provider = PROVIDERS[plugin.provider](provider_clients(http))
+    versions = provider.list_versions(plugin.project, minecraft_version=minecraft_version)
 
     choices = [
         (
@@ -1380,16 +1348,7 @@ def _pin_plugin(
         f"{plugin.id} version (current: {plugin.version})", choices, default=default
     )
 
-    if plugin.provider == "hangar":
-        asset, file_choices = hangar_version_file_choices(
-            http, github, project=plugin.project, version=version
-        )
-    elif plugin.provider == "modrinth":
-        asset, file_choices = modrinth_version_file_choices(
-            modrinth, plugin.project, version=version
-        )
-    else:
-        asset, file_choices = github_release_file_choices(github, plugin.project, tag=version)
+    asset, file_choices = provider.file_choices(plugin.project, version=version)
     if file_choices:
         asset = prompter.select(
             f"{plugin.id} {version} file",
@@ -1433,7 +1392,7 @@ def _resolve_release(item: _Item, config: Config, context: PipelineContext) -> R
     if item.plugin is None:  # pragma: no cover - guaranteed by _iter_items
         raise RocketError(f"internal error: plugin item {item.id} is missing its config")
     provider_class = PROVIDERS[item.plugin.provider]
-    return provider_class(context).resolve(item.plugin)
+    return provider_class(context).resolve(item.plugin, minecraft_version=context.minecraft_version)
 
 
 def _resolver_choice(item: _Item) -> ResolverChoice:
