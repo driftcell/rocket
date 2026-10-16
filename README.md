@@ -12,7 +12,29 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 with `rocket.lock` pinning what was resolved. No long-running service/automatic restart, automatic
 version upgrades, or automatic dependency installation.
 
-## Quick start
+## Install
+
+Install the CLI straight from GitHub with [uv](https://docs.astral.sh/uv/) (Python 3.13+; uv
+downloads a managed interpreter automatically when needed):
+
+```bash
+uv tool install git+https://github.com/driftcell/rocket
+
+# or pin a release tag for reproducible installs
+uv tool install "git+https://github.com/driftcell/rocket@v0.1.0"
+```
+
+Then run it from anywhere (`--config` defaults to `./server.toml`):
+
+```bash
+rocket download --config server.toml
+rocket --version
+```
+
+Upgrade with `uv tool upgrade rocket`; uninstall with `uv tool uninstall rocket`. If the shell cannot
+find `rocket` afterwards, run `uv tool update-shell` (or add `~/.local/bin` to `PATH`).
+
+## Quick start (from a source checkout)
 
 ```bash
 cd rocket
@@ -53,7 +75,7 @@ project = "ViaVersion/ViaVersion"
 version = "5.12.1"
 ```
 
-## Install and run
+## Run from a source checkout
 
 ```bash
 cd rocket

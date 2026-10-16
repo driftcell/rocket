@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rocket import __version__
 from rocket.cli import _format_duration, main
 
 from .helpers import (
@@ -366,6 +367,17 @@ def test_unknown_command_exits_2() -> None:
         assert exc.code == 2
     else:  # pragma: no cover
         raise AssertionError("an unknown subcommand should trigger SystemExit")
+
+
+def test_version_flag_exits_0(capsys) -> None:
+    # argparse prints "rocket <version>" and exits directly with code 0
+    try:
+        main(["--version"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:  # pragma: no cover
+        raise AssertionError("--version should trigger SystemExit")
+    assert capsys.readouterr().out.strip() == f"rocket {__version__}"
 
 
 def test_no_uuid_or_secret_leaks_in_output(tmp_path: Path, capsys, monkeypatch) -> None:

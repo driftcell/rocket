@@ -14,6 +14,7 @@ from typing import TextIO
 
 import httpx
 
+from . import __version__
 from .config import Config, PluginConfig, load_config
 from .context import PipelineContext
 from .downloader import HTTPDownloader
@@ -63,6 +64,11 @@ def main(
     parser = argparse.ArgumentParser(
         prog="rocket",
         description="Declaratively download the Paper server and plugin JARs",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     download_parser = subparsers.add_parser(
