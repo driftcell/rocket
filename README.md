@@ -31,7 +31,7 @@ downloads a managed interpreter automatically when needed):
 uv tool install git+https://github.com/driftcell/rocket
 
 # or pin a release tag for reproducible installs
-uv tool install "git+https://github.com/driftcell/rocket@v0.8.0"
+uv tool install "git+https://github.com/driftcell/rocket@v0.9.0"
 ```
 
 Then run it from anywhere (`--config` defaults to `./server.toml`):
@@ -52,10 +52,10 @@ release, plus `ghcr.io/driftcell/rocket:latest` tracking the newest one. The ima
 directory is `/data`, so mount the server directory there:
 
 ```bash
-docker run --rm -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.8.0 download
+docker run --rm -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.9.0 download
 
 # rocket init is interactive; give it a TTY
-docker run --rm -it -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.8.0 init
+docker run --rm -it -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.9.0 init
 ```
 
 Pin the tag for reproducible setups; upgrade by pulling the newer tag.
@@ -172,7 +172,7 @@ rocket remove luckperms
   comments and hand-written formatting included — untouched.
 
 The generated file pins exact versions and no longer needs an `[http]` section: requests identify
-as `rocket/0.8.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
+as `rocket/0.9.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
 own email or project URL if you prefer. An existing file is never overwritten without `--force`. Example run:
 
 ```text
