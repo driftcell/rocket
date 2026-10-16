@@ -570,3 +570,155 @@ def _channel_name(value: Any) -> str | None:
 
 def _summarize(names: list[str]) -> str:
     return ", ".join(names) if names else "(none)"
+
+
+# ---------------------------------------------------------------------------
+# Version catalogs for ``rocket pin`` (exact, user-chosen versions)
+# ---------------------------------------------------------------------------
+
+_PIN_CATALOG_LIMIT = 30  # select prompts stay navigable
+
+
+def list_hangar_versions(
+    http: HTTPClient, *, project: str, minecraft_version: str, limit: int = _PIN_CATALOG_LIMIT
+) -> list[tuple[str, str]]:
+    """(version name, channel) of a Hangar project, newest first, all channels.
+
+    Only versions declaring the target platform version are listed.
+    """
+    _, slug = parse_project(project, field_path="project")
+    quoted_slug = urllib.parse.quote(slug, safe="")
+    params = urllib.parse.urlencode(
+        {"platform": "PAPER", "platformVersion": minecraft_version, "limit": str(limit)}
+    )
+    payload = _get_json_or_not_found(
+        http, f"{_HANGAR_BASE}/projects/{quoted_slug}/versions?{params}", project=project
+    )
+    if not isinstance(payload, dict):
+        raise ProviderError(f"Hangar version list has an invalid structure: {project}")
+    results = payload.get("result")
+    if not isinstance(results, list):
+        raise ProviderError(
+            f"Hangar version list is missing the result field: {project}",
+            hint=(
+                "the upstream response contract may have changed; "
+                "update the adapter instead of guessing"
+            ),
+        )
+    versions: list[tuple[str, str]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        channel = _channel_name(item.get("channel"))
+        if isinstance(name, str) and name and channel is not None:
+            versions.append((name, channel))
+    if not versions:
+        raise ProviderError(
+            f"Hangar project {project} has no version for Minecraft {minecraft_version}",
+            hint="pin another Paper version first (rocket pin core), or edit the pin by hand",
+        )
+    return versions
+
+
+def list_modrinth_versions(
+    modrinth: ModrinthClient, project: str, *, minecraft_version: str
+) -> list[tuple[str, str]]:
+    """(version number, version type) usable with PAPER on the target Minecraft version."""
+    slug = parse_slug(project, field_path="project")
+    versions = modrinth.get_versions(slug)
+    compatible = [
+        (version.version_number, version.version_type)
+        for version in versions
+        if minecraft_version in version.game_versions and set(version.loaders) & set(PAPER_LOADERS)
+    ]
+    if not compatible:
+        raise ProviderError(
+            f"Modrinth project {slug} has no PAPER version for Minecraft {minecraft_version}",
+            hint="pin another Paper version first (rocket pin core), or edit the pin by hand",
+        )
+    return compatible[:_PIN_CATALOG_LIMIT]
+
+
+def list_github_releases(github: GitHubClient, project: str) -> list[str]:
+    """Release tags of a GitHub project, newest first (drafts and prereleases excluded)."""
+    owner, repo = parse_project(project, field_path="project")
+    tags = [
+        release.tag
+        for release in github.get_releases(owner, repo)
+        if not release.draft and not release.prerelease
+    ]
+    if not tags:
+        raise ProviderError(f"GitHub project {project} has no non-prerelease releases")
+    return tags
+
+
+def hangar_version_file_choices(
+    http: HTTPClient, github: GitHubClient, *, project: str, version: str
+) -> tuple[str | None, list[str]]:
+    """(asset, choices) for one exact Hangar version: a hosted file pins no asset."""
+    _, slug = parse_project(project, field_path="project")
+    quoted_slug = urllib.parse.quote(slug, safe="")
+    detail_url = (
+        f"{_HANGAR_BASE}/projects/{quoted_slug}/versions/{urllib.parse.quote(version, safe='')}"
+    )
+    detail = _get_json_or_not_found(http, detail_url, project=project)
+    if not isinstance(detail, dict):
+        raise ProviderError(
+            f"Hangar version response has an invalid structure: {project} {version}"
+        )
+    downloads = detail.get("downloads")
+    paper = downloads.get("PAPER") if isinstance(downloads, dict) else None
+    if not isinstance(paper, dict):
+        raise ProviderError(f"Hangar version {version} of {project} has no PAPER download entry")
+    download_url = paper.get("downloadUrl")
+    if isinstance(download_url, str) and download_url:
+        return None, []  # a hosted file is a single choice; no asset is pinned
+    external_url = paper.get("externalUrl")
+    if isinstance(external_url, str) and external_url:
+        release = _release_for_external_link(github, external_url)
+        return _file_choices(
+            [asset.name for asset in release.assets],
+            context=f"release {release.owner}/{release.repo}@{release.tag}",
+        )
+    raise ProviderError(
+        f"Hangar version {version} of {project} has no download entry "
+        "(both downloadUrl and externalUrl are empty)"
+    )
+
+
+def modrinth_version_file_choices(
+    modrinth: ModrinthClient, project: str, *, version: str
+) -> tuple[str | None, list[str]]:
+    """(asset, choices) for one exact Modrinth version."""
+    slug = parse_slug(project, field_path="project")
+    versions = modrinth.get_versions(slug)
+    found = next((item for item in versions if item.version_number == version), None)
+    if found is None:
+        raise ProviderError(f"Modrinth version number {version!r} does not exist: {slug!r}")
+    return _file_choices(
+        [file.filename for file in found.files], context=f"Modrinth version {version!r}"
+    )
+
+
+def github_release_file_choices(
+    github: GitHubClient, project: str, *, tag: str
+) -> tuple[str | None, list[str]]:
+    """(asset, choices) for one exact GitHub Release tag."""
+    owner, repo = parse_project(project, field_path="project")
+    release = github.get_release(owner, repo, tag)
+    return _file_choices(
+        [asset.name for asset in release.assets], context=f"release {owner}/{repo}@{tag}"
+    )
+
+
+def _file_choices(names: list[str], *, context: str) -> tuple[str | None, list[str]]:
+    """One JAR is used directly; several JARs are returned for the user to choose from."""
+    jars = [name for name in names if name.lower().endswith(".jar")]
+    if not jars:
+        raise ProviderError(
+            f"{context} has no JAR files", hint=f"available files: {_summarize(names)}"
+        )
+    if len(jars) == 1:
+        return jars[0], []
+    return None, jars

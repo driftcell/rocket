@@ -11,6 +11,7 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
   cmd+clickable project links on a TTY;
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
 - Bumps Paper builds, Minecraft releases and plugin versions interactively (`rocket upgrade`);
+- Pins core or a plugin to any exact version interactively, downgrades included (`rocket pin`);
 - Concurrent downloads (up to 4 at once) with a single live progress bar on a TTY;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
@@ -196,6 +197,29 @@ rocket upgrade --force    # apply everything without prompting
   and the files on disk always agree. Everything else stays upgraded and the run exits `1`.
 - Without `--force` the command is interactive (like `rocket init`) and refuses to run off a
   terminal.
+
+## Pinning an exact version (`rocket pin`)
+
+`rocket pin` is the fine-grained counterpart of `rocket upgrade`: instead of the newest
+recommendation, you pick any exact version from the provider's catalog — downgrades included.
+
+```bash
+rocket pin              # ask what to pin: core or one of the plugins
+rocket pin core         # release line → exact version → build
+rocket pin luckperms    # exact version of one plugin → file, when ambiguous
+```
+
+- **Core** is a two-level choice: the release line (`26.3`, `26.1`, `1.21`…), then the exact
+  version in it, then the build — "always the newest STABLE build (unpinned)" or a specific
+  pinned build id.
+- **Plugins** list every version usable with the configured Minecraft version (all Hangar
+  channels, Modrinth release/beta/alpha, and GitHub release tags — an explicit pick, so no
+  "newest" heuristics anywhere). When the chosen version ships several JARs, a second prompt
+  selects the file.
+- Selecting what is already pinned prints `nothing to change`. Otherwise the same per-item
+  atomicity as `rocket upgrade` applies: the pin is written first, and a failed download rolls
+  it back. The command is interactive-only; off a terminal it refuses to run (pin by hand and
+  run `rocket download` instead).
 
 ## Run from a source checkout
 
@@ -413,7 +437,7 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 ```
 src/rocket/
   __main__.py     python -m rocket entry point
-  cli.py          download/init/search/add/remove/upgrade subcommands, per-item results, exit codes
+  cli.py          download/init/search/add/remove/upgrade/pin subcommands, per-item results, exit codes
   wizard.py       init: interactive prompts, recommendations and server.toml output
   catalog.py      init: curated default plugin catalog
   recommend.py    init/add: newest usable version per plugin

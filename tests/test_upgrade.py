@@ -11,10 +11,9 @@ from .helpers import (
     FILL_PROJECTS_URL,
     FakeAPI,
     ScriptedPrompter,
+    add_fill_builds,
     add_paper_routes,
     base_config,
-    fill_build_payload,
-    fill_builds_url,
     fill_project_payload,
     hangar_native_paper,
     hangar_project_payload,
@@ -354,28 +353,6 @@ def test_upgrade_non_tty_without_force_fails(tmp_path: Path, capsys) -> None:
 # ---------------------------------------------------------------------------
 # Core upgrades
 # ---------------------------------------------------------------------------
-
-
-def add_fill_builds(api: FakeAPI, version: str, builds: list[tuple[int, bytes]]) -> None:
-    api.add_json(
-        fill_builds_url(version),
-        [
-            fill_build_payload(
-                build_id=build_id,
-                channel="STABLE",
-                url=f"https://fill-data.papermc.io/v1/objects/{sha256_hex(jar)}/paper-{version}-{build_id}.jar",
-                name=f"paper-{version}-{build_id}.jar",
-                sha256=sha256_hex(jar),
-                size=len(jar),
-            )
-            for build_id, jar in builds
-        ],
-    )
-    for build_id, jar in builds:
-        api.add_bytes(
-            f"https://fill-data.papermc.io/v1/objects/{sha256_hex(jar)}/paper-{version}-{build_id}.jar",
-            jar,
-        )
 
 
 def test_upgrade_core_patch_is_the_default_choice(tmp_path: Path, capsys) -> None:

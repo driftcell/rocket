@@ -230,19 +230,15 @@ def hangar_versions_url(
     slug: str,
     *,
     platform_version: str,
-    channel: str = "Release",
+    channel: str | None = "Release",
     limit: int = 10,
 ) -> str:
-    params = urlencode(
-        {
-            "platform": "PAPER",
-            "platformVersion": platform_version,
-            "channel": channel,
-            "limit": str(limit),
-        }
-    )
+    params = {"platform": "PAPER", "platformVersion": platform_version}
+    if channel is not None:
+        params["channel"] = channel
+    params["limit"] = str(limit)
     quoted_slug = quote(slug, safe="")
-    return f"https://hangar.papermc.io/api/v1/projects/{quoted_slug}/versions?{params}"
+    return f"https://hangar.papermc.io/api/v1/projects/{quoted_slug}/versions?{urlencode(params)}"
 
 
 def github_release_api_url(owner: str, repo: str, tag: str) -> str:
@@ -275,6 +271,29 @@ def fill_build_payload(
     if size is not None:
         download["size"] = size
     return {"id": build_id, "channel": channel, "downloads": {"server:default": download}}
+
+
+def add_fill_builds(api: FakeAPI, version: str, builds: list[tuple[int, bytes]]) -> None:
+    """Register the Fill builds list for one Paper release plus each build's JAR bytes."""
+    api.add_json(
+        fill_builds_url(version),
+        [
+            fill_build_payload(
+                build_id=build_id,
+                channel="STABLE",
+                url=f"https://fill-data.papermc.io/v1/objects/{sha256_hex(jar)}/paper-{version}-{build_id}.jar",
+                name=f"paper-{version}-{build_id}.jar",
+                sha256=sha256_hex(jar),
+                size=len(jar),
+            )
+            for build_id, jar in builds
+        ],
+    )
+    for build_id, jar in builds:
+        api.add_bytes(
+            f"https://fill-data.papermc.io/v1/objects/{sha256_hex(jar)}/paper-{version}-{build_id}.jar",
+            jar,
+        )
 
 
 def add_paper_routes(api: FakeAPI, *, version: str = "26.1.2", build_id: int = 42) -> bytes:
