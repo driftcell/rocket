@@ -39,6 +39,8 @@ class GitHubRelease:
     tag: str
     html_url: str
     assets: tuple[GitHubAsset, ...]
+    draft: bool = False
+    prerelease: bool = False
 
 
 class GitHubURLClass(StrEnum):
@@ -107,6 +109,7 @@ class GitHubClient:
     def __init__(self, http: HTTPClient) -> None:
         self._http = http
         self._cache: dict[tuple[str, str, str], GitHubRelease] = {}
+        self._release_lists: dict[tuple[str, str, int], tuple[GitHubRelease, ...]] = {}
 
     def get_release(self, owner: str, repo: str, tag: str) -> GitHubRelease:
         """Query a Release by exact tag; fail explicitly on 404, no latest fallback."""
@@ -138,6 +141,54 @@ class GitHubClient:
         release = _parse_release(payload, owner=owner, repo=repo, tag=tag)
         self._cache[key] = release
         return release
+
+    def get_releases(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        per_page: int = 30,
+    ) -> tuple[GitHubRelease, ...]:
+        """List recent Releases, newest first (used by ``rocket init`` recommendations)."""
+        key = (owner.lower(), repo.lower(), per_page)
+        cached = self._release_lists.get(key)
+        if cached is not None:
+            return cached
+        url = (
+            f"{_API_BASE}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+            f"/releases?per_page={per_page}"
+        )
+        try:
+            payload = self._http.get_json(url)
+        except HTTPStatusError as exc:
+            if exc.status_code == 404:
+                raise ResolutionError(
+                    f"GitHub repository not found: {owner}/{repo} (HTTP 404)",
+                    hint="check the project coordinates; no guessing by name",
+                ) from exc
+            if exc.status_code in (403, 429):
+                raise ResolutionError(
+                    f"GitHub API rejected the request: {owner}/{repo} "
+                    f"(HTTP {exc.status_code}, possibly rate limited)",
+                    hint="set the GITHUB_TOKEN environment variable (only sent to api.github.com) "
+                    "to raise the limit",
+                ) from exc
+            raise
+        if not isinstance(payload, list):
+            raise ResolutionError(
+                f"GitHub release list response has invalid structure (expected array): "
+                f"{owner}/{repo}"
+            )
+        releases: list[GitHubRelease] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            tag = item.get("tag_name")
+            if not isinstance(tag, str) or not tag:
+                continue
+            releases.append(_parse_release(item, owner=owner, repo=repo, tag=tag))
+        self._release_lists[key] = tuple(releases)
+        return tuple(releases)
 
 
 def select_release_asset(release: GitHubRelease, *, selector: str | None) -> GitHubAsset:
@@ -221,7 +272,15 @@ def _parse_release(payload: Any, *, owner: str, repo: str, tag: str) -> GitHubRe
     html_url = payload.get("html_url")
     if not isinstance(html_url, str) or not html_url:
         html_url = f"https://github.com/{owner}/{repo}/releases/tag/{quote(tag, safe='')}"
-    return GitHubRelease(owner=owner, repo=repo, tag=tag, html_url=html_url, assets=tuple(assets))
+    return GitHubRelease(
+        owner=owner,
+        repo=repo,
+        tag=tag,
+        html_url=html_url,
+        assets=tuple(assets),
+        draft=payload.get("draft") is True,
+        prerelease=payload.get("prerelease") is True,
+    )
 
 
 def _parse_digest(value: Any) -> Checksum | None:

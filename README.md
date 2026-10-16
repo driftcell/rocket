@@ -6,13 +6,15 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
 - Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
+- Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
 - Writes a `rocket.lock` pinning the resolved Paper build and plugin artifacts, reused by later runs.
 
-**Scope of this iteration**: declare a version → resolve artifacts → download and verify correctly,
-with `rocket.lock` pinning what was resolved. No long-running service/automatic restart, automatic
-version upgrades, or automatic dependency installation.
+**Scope of this iteration**: declare a version (or let `rocket init` write the initial config) →
+resolve artifacts → download and verify correctly, with `rocket.lock` pinning what was resolved.
+No long-running service/automatic restart, automatic version upgrades, or automatic dependency
+installation.
 
 ## Install
 
@@ -29,6 +31,7 @@ uv tool install "git+https://github.com/driftcell/rocket@v0.1.0"
 Then run it from anywhere (`--config` defaults to `./server.toml`):
 
 ```bash
+rocket init                     # write a starter server.toml interactively
 rocket download --config server.toml
 rocket --version
 ```
@@ -42,8 +45,9 @@ find `rocket` afterwards, run `uv tool update-shell` (or add `~/.local/bin` to `
 cd rocket
 uv sync
 
-# 1. Prepare the config (replace the contact info in http.user_agent with a real email or project URL)
-cp server.example.toml server.toml
+# 1. Generate a starter config interactively (Paper version + recommended plugin versions),
+#    or copy server.example.toml and edit it by hand
+uv run python -m rocket init
 
 # 2. Download (--config defaults to server.toml in the current working directory)
 uv run python -m rocket download
@@ -75,6 +79,45 @@ user_agent = "rocket/0.1 (you@example.com)"   # must be replaced with real conta
 provider = "hangar"
 project = "ViaVersion/ViaVersion"
 version = "5.12.1"
+```
+
+## Generating a config (`rocket init`)
+
+`rocket init` asks a few questions and writes a starter `server.toml`:
+
+1. **Server type** — `Paper` (the only supported type for now);
+2. **Paper version** — picked from the live Fill version list, newest first (rc/pre builds are
+   filtered out; when the list cannot be fetched, the version can be typed manually);
+3. **Default plugins** — a curated list of common plugins, all preselected; uncheck the ones you
+   do not want, or answer "no" to skip plugins entirely.
+
+Every selected plugin is then resolved to the newest version the download pipeline can use
+exactly: Hangar Release-channel versions that declare the chosen Minecraft version (including
+external links to GitHub Release tag pages, with the right attachment selected), Modrinth release
+versions listing it with a paper-family loader, and GitHub releases with a matching JAR
+attachment — GitHub provides no Minecraft compatibility metadata, so the newest usable release is
+used as-is. Plugins that cannot be resolved are reported as skipped and left out; the file is
+still written.
+
+```bash
+uv run python -m rocket init                       # writes ./server.toml
+uv run python -m rocket init --config my/server.toml --force
+```
+
+The generated file pins exact versions and uses `rocket/0.1.0 (https://github.com/driftcell/rocket)`
+as `http.user_agent`; replace the contact with your own email or project URL if you prefer. An
+existing file is never overwritten without `--force`. Example run:
+
+```text
+Server type: Paper
+Paper version (newest first): 1.21.11
+Add the default plugin set? Yes
+Resolving 12 plugins for Paper 1.21.11...
+Resolved 12 of 12 plugins for Paper 1.21.11
+  + viaversion 5.12.1 (hangar)
+  ...
+wrote server.toml
+next: rocket download
 ```
 
 ## Run from a source checkout
@@ -190,6 +233,9 @@ stdout is a TTY; set `NO_COLOR` to disable colors. Example resolution chains:
 | 1 | resolution, download, validation or lock-write failures occurred (other items keep processing) |
 | 2 | invalid config (fails before any network request) |
 
+`rocket init` uses `0` when the file was written and `1` when the run was aborted (Ctrl-C) or
+refused to overwrite an existing file (use `--force`).
+
 ## Re-runs and correctness
 
 - A matching `rocket.lock` entry skips the provider query; the locked URL, size and checksum are used
@@ -222,6 +268,8 @@ data only and is never executed.
 | --- | --- |
 | `httpx` | HTTP client: timeouts, TLS verification, streaming reads, built-in redirect following (up to 5) |
 | `tenacity` | bounded retries and exponential backoff (network errors, 429, 5xx; respects `Retry-After`, capped at 60 seconds) |
+| `questionary` | interactive prompts for `rocket init` |
+| `tomli-w` | writing server.toml from `rocket init` (reading still uses the standard library) |
 | standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, etc. |
 
 ## Tests
@@ -271,13 +319,20 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
   validated and the actual SHA-256 is printed.
 - Metadata compatibility checks (Hangar `platformDependencies.PAPER` exactly containing the target
   version) are no substitute for actually starting the server.
+- `rocket init` resolves recommendations once, at init time: the generated file pins exact
+  versions, and later upstream changes do not affect it; GitHub-sourced plugins get the newest
+  release with a usable JAR attachment because GitHub provides no Minecraft compatibility data.
 
 ## Code layout
 
 ```
 src/rocket/
   __main__.py     python -m rocket entry point
-  cli.py          download command, per-item results, exit codes
+  cli.py          download/init subcommands, per-item results, exit codes
+  wizard.py       init: interactive prompts, recommendations and server.toml output
+  catalog.py      init: curated default plugin catalog
+  recommend.py    init: newest usable version per catalog entry
+  console.py      shared styling and error-printing helpers
   config.py       server.toml parsing and strict validation
   models.py       shared models (entry/Release/Artifact/result)
   providers.py    Fill (Paper), Hangar, GitHub providers

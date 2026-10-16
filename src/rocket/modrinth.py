@@ -20,7 +20,7 @@ _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _SHA512_RE = re.compile(r"[0-9a-fA-F]{128}")
 
 # Modrinth loaders accepted for the PAPER platform (Bukkit-family plugins can all run on Paper)
-_PAPER_LOADERS = ("paper", "bukkit", "spigot", "purpur", "folia")
+PAPER_LOADERS = ("paper", "bukkit", "spigot", "purpur", "folia")
 
 
 @dataclass(frozen=True)
@@ -152,7 +152,7 @@ def check_loaders(version: ModrinthVersion, *, platform: str) -> None:
     """Platform and loader compatibility check."""
     if platform != "PAPER":
         raise ProviderError(f"Modrinth provider does not support platform {platform} yet")
-    if not set(version.loaders) & set(_PAPER_LOADERS):
+    if not set(version.loaders) & set(PAPER_LOADERS):
         declared = ", ".join(version.loaders) or "none"
         raise ProviderError(
             f"Modrinth version {version.version_number!r} is not usable with PAPER "
