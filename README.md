@@ -25,7 +25,7 @@ downloads a managed interpreter automatically when needed):
 uv tool install git+https://github.com/driftcell/rocket
 
 # or pin a release tag for reproducible installs
-uv tool install "git+https://github.com/driftcell/rocket@v0.1.0"
+uv tool install "git+https://github.com/driftcell/rocket@v0.2.0"
 ```
 
 Then run it from anywhere (`--config` defaults to `./server.toml`):
@@ -104,7 +104,7 @@ uv run python -m rocket init                       # writes ./server.toml
 uv run python -m rocket init --config my/server.toml --force
 ```
 
-The generated file pins exact versions and uses `rocket/0.1.0 (https://github.com/driftcell/rocket)`
+The generated file pins exact versions and uses `rocket/0.2.0 (https://github.com/driftcell/rocket)`
 as `http.user_agent`; replace the contact with your own email or project URL if you prefer. An
 existing file is never overwritten without `--force`. Example run:
 
