@@ -254,8 +254,7 @@ def _status_hint(status: int) -> str | None:
         )
     if status in (401, 403):
         return (
-            "permission denied or request rejected; "
-            "check the declaration and network environment"
+            "permission denied or request rejected; check the declaration and network environment"
         )
     if status == 429:
         return "rate limited; retries already applied per policy"

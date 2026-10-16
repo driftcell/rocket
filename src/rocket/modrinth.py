@@ -175,8 +175,8 @@ def select_file(version: ModrinthVersion, *, selector: str | None) -> ModrinthFi
             )
         if len(matches) > 1:
             raise ProviderError(
-            f"Modrinth version has multiple files named {selector!r}; cannot decide"
-        )
+                f"Modrinth version has multiple files named {selector!r}; cannot decide"
+            )
         chosen = matches[0]
         if not chosen.filename.lower().endswith(".jar"):
             raise ProviderError(

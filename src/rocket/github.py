@@ -185,8 +185,7 @@ def select_release_asset(release: GitHubRelease, *, selector: str | None) -> Git
 def _parse_release(payload: Any, *, owner: str, repo: str, tag: str) -> GitHubRelease:
     if not isinstance(payload, dict):
         raise ResolutionError(
-            f"GitHub Release response has invalid structure (expected object): "
-            f"{owner}/{repo}@{tag}"
+            f"GitHub Release response has invalid structure (expected object): {owner}/{repo}@{tag}"
         )
     assets_raw = payload.get("assets")
     if not isinstance(assets_raw, list):

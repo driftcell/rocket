@@ -391,9 +391,7 @@ def _print_run_summary(
         print(_phase_line(f"Resolved {_plural(resolved, 'item')}", resolve_seconds))
     if downloaded:
         tail = f" ({unchanged} unchanged)" if unchanged else ""
-        print(
-            _phase_line(f"Downloaded {_plural(downloaded, 'item')}", download_seconds) + tail
-        )
+        print(_phase_line(f"Downloaded {_plural(downloaded, 'item')}", download_seconds) + tail)
     elif unchanged:
         print(_phase_line(f"Audited {_plural(unchanged, 'item')}", download_seconds))
 
