@@ -58,3 +58,12 @@ asset = "EssentialsXChat-2.22.0.jar"
 # project = "coreprotect"
 # version = "24.1"
 # asset = "CoreProtect-CE-24.1.jar"
+
+# Spiget (SpigotMC) example: the project is the numeric resource id from the resource URL.
+# Spiget serves one unnamed file per version, so no asset is pinned; it also provides no
+# upstream hash, so the file is re-downloaded and re-validated on every run. Premium and
+# externally hosted resources are rejected with a hint.
+# [plugins.luckperms]
+# provider = "spiget"
+# project = "28140"
+# version = "5.5.71"

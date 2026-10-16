@@ -34,6 +34,10 @@ from .helpers import (
     modrinth_versions_url,
     sha256_hex,
     sha512_hex,
+    spiget_resource_payload,
+    spiget_resource_url,
+    spiget_version_payload,
+    spiget_versions_url,
     write_config,
 )
 
@@ -244,6 +248,76 @@ def test_add_hangar_external_auto_follows_fixed_tag_release(tmp_path: Path) -> N
     text = (tmp_path / "server.toml").read_text(encoding="utf-8")
     assert 'version = "2.0.0"' in text
     assert 'asset = "Good-2.0.0.jar"' in text
+
+
+def add_spiget_auto_routes(api: FakeAPI, *, mc: str = "26.1") -> None:
+    api.add_json(
+        spiget_resource_url("28140"),
+        spiget_resource_payload(resource_id=28140, name="LuckPerms", tested_versions=[mc]),
+    )
+    api.add_json(
+        spiget_versions_url("28140"),
+        [
+            spiget_version_payload(version_id=648014, name="5.5.71", release_date=1786045114),
+            spiget_version_payload(version_id=590885, name="5.5.0", release_date=1748247660),
+        ],
+    )
+
+
+def test_add_spiget_auto_pins_newest_version(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    add_spiget_auto_routes(api)
+
+    assert run_add(api, tmp_path, ["spiget:28140"], base_config()) == 0
+
+    text = (tmp_path / "server.toml").read_text(encoding="utf-8")
+    assert '[plugins.28140]\nprovider = "spiget"\nproject = "28140"\n' in text
+    assert 'version = "5.5.71"' in text
+    assert "asset" not in text
+    assert "added 28140 5.5.71 (spiget)" in capsys.readouterr().out
+
+
+def test_add_spiget_explicit_version_is_verified(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    add_spiget_auto_routes(api)
+
+    assert (
+        run_add(
+            api,
+            tmp_path,
+            ["spiget:28140", "--version", "5.5.0", "--id", "luckperms"],
+            base_config(),
+        )
+        == 0
+    )
+
+    text = (tmp_path / "server.toml").read_text(encoding="utf-8")
+    assert "[plugins.luckperms]" in text
+    assert 'version = "5.5.0"' in text
+
+    api2 = FakeAPI()
+    api2.add_json(spiget_resource_url("28141"), {"error": "not found"}, status=404)
+    assert run_add(api2, tmp_path, ["spiget:28141", "--version", "9.9.9"], base_config()) == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_add_spiget_rejects_asset_before_network(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+
+    assert run_add(api, tmp_path, ["spiget:28140", "--asset", "LuckPerms.jar"], base_config()) == 1
+
+    assert "asset cannot be verified" in capsys.readouterr().err
+    assert api.requests == []
+    assert "plugins" not in (tmp_path / "server.toml").read_text(encoding="utf-8")
+
+
+def test_add_spiget_invalid_resource_id_fails_before_network(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+
+    assert run_add(api, tmp_path, ["spiget:luckperms"], base_config()) == 1
+
+    assert "not a valid Spigot resource id" in capsys.readouterr().err
+    assert api.requests == []
 
 
 def test_add_auto_with_asset_selects_among_multiple_jars(tmp_path: Path) -> None:
