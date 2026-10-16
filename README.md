@@ -31,7 +31,7 @@ downloads a managed interpreter automatically when needed):
 uv tool install git+https://github.com/driftcell/rocket
 
 # or pin a release tag for reproducible installs
-uv tool install "git+https://github.com/driftcell/rocket@v0.6.0"
+uv tool install "git+https://github.com/driftcell/rocket@v0.7.0"
 ```
 
 Then run it from anywhere (`--config` defaults to `./server.toml`):
@@ -156,7 +156,7 @@ rocket remove luckperms
   comments and hand-written formatting included — untouched.
 
 The generated file pins exact versions and no longer needs an `[http]` section: requests identify
-as `rocket/0.6.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
+as `rocket/0.7.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
 own email or project URL if you prefer. An existing file is never overwritten without `--force`. Example run:
 
 ```text
