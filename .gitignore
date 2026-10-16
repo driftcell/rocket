@@ -1,0 +1,13 @@
+# Python / uv local environments and caches (note: commit uv.lock and .python-version, do not ignore them)
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+
+# download artifacts produced when running directly inside the rocket/ directory
+artifacts/

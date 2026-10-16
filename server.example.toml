@@ -1,0 +1,59 @@
+# rocket example config: declare the exact versions of the Paper server and plugins, then run
+#   uv run python -m rocket download --config server.example.toml
+#
+# Note: before making real network requests, replace the contact in http.user_agent with
+# a real contact email or project URL. Fill requires a User-Agent that identifies the
+# software and includes contact info; generic defaults such as curl or wget are rejected.
+
+schema_version = 1
+
+[paper]
+version = "26.1.2"     # exact Minecraft release (not a version group; do not write it as a float like 26.1)
+channel = "STABLE"     # this version only supports STABLE
+# build = 42           # optional: download this exact stable build; when omitted, the STABLE build with the highest id for this version is chosen
+
+[http]
+user_agent = "rocket/0.1 (contact@example.com)"   # must be replaced with real contact info
+timeout_seconds = 30
+retries = 3            # at most 3 retries after the first attempt
+
+[download]
+output_dir = "./artifacts"   # relative paths are resolved against this config file's directory
+
+[plugin_defaults]
+platform = "PAPER"
+follow_external = true
+
+# Hangar native hosted file (downloadUrl + sha256Hash)
+[plugins.viaversion]
+provider = "hangar"
+project = "ViaVersion/ViaVersion"
+version = "5.12.1"
+
+# Hangar external link → GitHub Release: asset selects the exact attachment to download
+[plugins.essentialsx]
+provider = "hangar"
+project = "EssentialsX/Essentials"
+version = "2.22.0"
+asset = "EssentialsX-2.22.0.jar"
+
+[plugins.essentialsx_chat]
+provider = "hangar"
+project = "EssentialsX/Essentials"
+version = "2.22.0"
+asset = "EssentialsXChat-2.22.0.jar"
+
+# Example of using the GitHub provider directly (exact tag); choose either this or the
+# Hangar config above, and never put two same-named TOML sections in one file.
+# [plugins.essentialsx_github]
+# provider = "github"
+# project = "EssentialsX/Essentials"
+# version = "2.22.0"
+# asset = "EssentialsX-2.22.0.jar"
+
+# Modrinth native example (official public build; the file provides a SHA-512 checksum):
+# [plugins.coreprotect]
+# provider = "modrinth"
+# project = "coreprotect"
+# version = "24.1"
+# asset = "CoreProtect-CE-24.1.jar"

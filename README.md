@@ -1,0 +1,264 @@
+# rocket
+
+A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
+
+- Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
+- Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`; resolvers: `auto`, `direct`, `github_release`);
+- Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
+- Per-item results and a failure exit code; one failing item does not affect the others;
+- Writes a `rocket.lock` pinning the resolved Paper build and plugin artifacts, reused by later runs.
+
+**Scope of this iteration**: declare a version → resolve artifacts → download and verify correctly,
+with `rocket.lock` pinning what was resolved. No long-running service/automatic restart, automatic
+version upgrades, or automatic dependency installation.
+
+## Quick start
+
+```bash
+cd rocket
+uv sync
+
+# 1. Prepare the config (replace the contact info in http.user_agent with a real email or project URL)
+cp server.example.toml server.toml
+
+# 2. Download (--config defaults to server.toml in the current working directory)
+uv run python -m rocket download
+
+# 3. Inspect the artifacts
+ls artifacts artifacts/plugins
+```
+
+`artifacts/` holds the downloaded files; consider adding it to `.gitignore`. `rocket.lock` is written
+next to the config file and should be committed so runs stay reproducible.
+
+On success, stdout prints a short uv-style summary — `Resolved N items` and `Downloaded M items`
+(or `Audited` when everything was already up to date) — followed by one line per downloaded item:
+` + <file> (<version>, <resolution chain>)`. `-v/--verbose` also lists unchanged items and shows each
+item's file path, size and checksum.
+
+Minimal working config (`plugins` may be empty to download Paper only):
+
+```toml
+schema_version = 1
+
+[paper]
+version = "26.1.2"
+
+[http]
+user_agent = "rocket/0.1 (you@example.com)"   # must be replaced with real contact info
+
+[plugins.viaversion]
+provider = "hangar"
+project = "ViaVersion/ViaVersion"
+version = "5.12.1"
+```
+
+## Install and run
+
+```bash
+cd rocket
+uv sync
+
+# Option 1: module form
+uv run python -m rocket download --config server.toml
+
+# Option 2: installed entry point script
+uv run rocket download --config server.toml
+```
+
+To use the workspace-root `server.toml`, run this from the repository root (relative paths are resolved
+against the config file's directory):
+
+```bash
+uv run --project rocket python -m rocket download --config server.toml
+```
+
+`--config` defaults to `server.toml` in the current working directory.
+
+## Config fields (server.toml)
+
+| Field | Type and semantics |
+| --- | --- |
+| `schema_version` | integer, this version only accepts `1` |
+| `paper.version` | required string, exact release version (not a version group, not a float) |
+| `paper.channel` | optional, default `STABLE`; this version only accepts `STABLE` |
+| `paper.build` | optional positive integer; when set, downloads exactly that stable build with no fallback |
+| `http.user_agent` | required string identifying the software with a real contact email or project URL |
+| `http.timeout_seconds` | optional positive number, default `30` |
+| `http.retries` | optional non-negative integer, default `3` (at most 3 retries after the first attempt) |
+| `download.output_dir` | optional string, default `./artifacts`; relative paths are resolved against the config file's directory |
+| `plugin_defaults.platform` | default `PAPER`; this version only supports `PAPER` |
+| `plugin_defaults.follow_external` | boolean, default `true` |
+| `plugins.<id>` | locally unique plugin id: lowercase letters, digits, underscores, hyphens |
+| `plugins.<id>.provider` | required, `hangar`, `github` or `modrinth` |
+| `plugins.<id>.project` | required `owner/name` coordinates (interpreted by the provider) |
+| `plugins.<id>.version` | required non-empty string; the version name for Hangar, an exact tag for GitHub |
+| `plugins.<id>.asset` | optional, full filename of the upstream artifact, exact match (not the local output filename) |
+| `plugins.<id>.resolver` | optional, default `auto`; may be explicitly set to `direct` or `github_release` |
+| `plugins.<id>.platform` / `.follow_external` | override the corresponding defaults |
+
+Constraints:
+
+- All versions are strings; numeric input such as `version = 26.1` is rejected (exit code 2).
+- `latest`, version ranges and automatic version selection are not supported; the `v` prefix on
+  GitHub tags is neither added nor removed automatically.
+- Unknown fields, unknown providers and unknown resolvers are not ignored; errors include the full field path.
+- Put shared settings in `[plugin_defaults]`; `[plugins.<id>]` sections hold only individual plugin items.
+- Local filenames are derived from the id (`plugins/<id>.jar`), not the remote filename, preventing
+  path traversal and duplicate loading of old JARs after upgrades.
+
+## Version semantics and the lock file (rocket.lock)
+
+- Plugins are resolved by the declared exact version and artifact; when Paper `build` is not specified,
+  the highest-id `STABLE` build within the exact Minecraft release version is chosen **once** and pinned.
+- Every run that resolves something writes `rocket.lock` next to `server.toml` (atomically, and only
+  when the content changed). It records the resolved Paper build and each resolved plugin artifact:
+  the declared identity (provider/project/version/asset/resolver/follow_external), the download URL,
+  the upstream size and checksum, and the resolution chain.
+- A later run reuses matching lock entries and skips provider queries entirely; local files are still
+  verified against the locked checksum and JAR structure. A changed config field invalidates only that
+  entry, which is re-resolved and rewritten.
+- `rocket download --upgrade` ignores the lock file, re-resolves every item (for example to move to a
+  newer Paper build or a re-published GitHub tag), and rewrites the lock.
+- A lock file that is malformed, has an unsupported `version`, or contains a broken entry is reported
+  as a `lock warning`; the affected items are re-resolved and the lock is rewritten.
+- `rocket.lock` is the only state file rocket reads or writes; there is no `server.lock.*` or hidden cache.
+
+## Output
+
+```
+artifacts/
+├── paper.jar
+└── plugins/
+    ├── viaversion.jar
+    ├── essentialsx.jar
+    └── essentialsx_chat.jar
+```
+
+Example success output:
+
+```text
+Resolved 3 items in 0.6s
+Downloaded 2 items in 4.1s (1 unchanged)
+ + paper.jar (1.21.11 build 148, fill)
+ + viaversion.jar (5.12.1, hangar)
+```
+
+Downloaded items are printed as ` + <file> (<version>, <resolution chain>)`. Unchanged items are only
+counted (`N unchanged`), and when nothing needs downloading the run reports `Audited N items` instead.
+With `-v/--verbose`, unchanged items are listed with ` =`, every item gets a second line with its
+target path, size and checksum (`sha256=...`/`sha512=...`) plus the upstream hash status
+(`upstream hash verified` / `upstream hash unavailable`), and informational logs are enabled
+(info-level messages are hidden by default). Phase timings are dimmed and `+` markers are green when
+stdout is a TTY; set `NO_COLOR` to disable colors. Example resolution chains:
+
+- `fill`: Paper → Fill API → direct link
+- `hangar`: direct link to a Hangar hosted file
+- `hangar → github-release → github-asset`: Hangar external link → GitHub Release → GitHub asset
+- `github → github-release → github-asset`: native GitHub provider
+- `modrinth`: direct link to a Modrinth official file (SHA-512 verification)
+
+## Exit codes
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | all succeeded or safely skipped |
+| 1 | resolution, download, validation or lock-write failures occurred (other items keep processing) |
+| 2 | invalid config (fails before any network request) |
+
+## Re-runs and correctness
+
+- A matching `rocket.lock` entry skips the provider query; the locked URL, size and checksum are used
+  instead, and `--upgrade` is the only way an item is re-resolved.
+- When the currently selected artifact has an upstream checksum (SHA-256 for Fill/Hangar/GitHub, SHA-512
+  for Modrinth) and the existing target file passes hash and JAR validation: the download is skipped.
+- Without an upstream hash: a file is not skipped just because it exists; it is re-downloaded to a
+  temporary file and atomically replaced after validation.
+- Download sequence: temporary file (same directory as the target, uniquely named) → stream and compute
+  the actual hash → upstream size check → upstream hash check (SHA-256/SHA-512) → `zipfile` CRC/structure
+  validation (Paper requires `META-INF/MANIFEST.MF` with a non-empty `Main-Class`; plugins require
+  `plugin.yml` or `paper-plugin.yml` at the JAR root) → `os.replace` atomic replace.
+- On failure, the temporary file is cleaned up and the original target file is kept; there is no
+  whole-directory transaction, and files outside this config are never deleted.
+- Only HTTPS URLs are accepted; auth headers are scoped per target domain, and `GITHUB_TOKEN` (optional
+  environment variable) is only sent to `api.github.com`; no token is ever printed.
+
+## Error handling
+
+Every failure is printed to stderr as `error: <id>: <message> (hint: ...)` with an actionable fix
+suggestion, distinguishing at least: config type/field errors, unknown providers/resolvers; project
+mismatch, missing version/tag/build; no stable builds, missing download fields, external following
+disabled; unsupported external links, unmatched or ambiguous attachments; HTTP/network/redirect
+failures; size/hash mismatch, invalid JAR, local write failures. Error page content is displayed as
+data only and is never executed.
+
+## Dependencies
+
+| Dependency | Purpose |
+| --- | --- |
+| `httpx` | HTTP client: timeouts, TLS verification, streaming reads, built-in redirect following (up to 5) |
+| `tenacity` | bounded retries and exponential backoff (network errors, 429, 5xx; respects `Retry-After`, capped at 60 seconds) |
+| standard library | `tomllib`, `zipfile`, `hashlib`, `tempfile`, `argparse`, etc. |
+
+## Tests
+
+Tests run fully offline by default (`httpx.MockTransport` + temporary directories + small JARs built in
+memory); all test data is fictional:
+
+```bash
+cd rocket
+uv run pytest
+uv run ruff check .
+uv run ty check
+```
+
+## Live network smoke test (optional)
+
+Before making real requests, replace the placeholder contact in `http.user_agent` with a real contact
+email or project URL (Fill requires a User-Agent that identifies the software and includes contact info):
+
+```bash
+cd rocket
+uv run python -m rocket download --config server.example.toml
+```
+
+The smoke test covers four chains: Paper → Fill, native Hangar (ViaVersion/ViaBackwards),
+Hangar external link → GitHub Release (EssentialsX modules), and native Modrinth (CoreProtect CE).
+
+## Known limitations
+
+- Only the implemented resolution kinds are supported (`hangar` / `github` / `modrinth`), and resolving
+  arbitrary websites is not promised; Patreon-style authorization pages and GitHub CE Releases without
+  attachments fail with an explicit error, and no JAR URL is fabricated.
+- CoreProtect CE is fetched via the Modrinth provider: its official GitHub CE Release has no attachments
+  and its Hangar entry points to Patreon; this tool explicitly does not support those two chains.
+- Modrinth requires an exact `version_number` and never queries latest; file hashes prefer the upstream
+  SHA-512 (Modrinth provides no SHA-256), and when only sha1 is available the file is treated as having
+  no strong checksum, with a warning.
+- No resumable downloads, parallel downloads or full on-disk caching; a retry re-downloads the entire file.
+- The lock records upstream metadata only: an artifact without an upstream checksum (for example a GitHub
+  Release whose asset has no `digest`) is re-downloaded and locally verified on every run.
+- No dependency resolution or automatic installation; only required dependencies declared by Hangar are reported.
+- When a GitHub Release `digest` is missing, it is treated as having no upstream hash; the JAR is still
+  validated and the actual SHA-256 is printed.
+- Metadata compatibility checks (Hangar `platformDependencies.PAPER` exactly containing the target
+  version) are no substitute for actually starting the server.
+
+## Code layout
+
+```
+src/rocket/
+  __main__.py     python -m rocket entry point
+  cli.py          download command, per-item results, exit codes
+  config.py       server.toml parsing and strict validation
+  models.py       shared models (entry/Release/Artifact/result)
+  providers.py    Fill (Paper), Hangar, GitHub providers
+  resolvers.py    Direct / GitHubRelease resolvers and auto selection
+  github.py       GitHub Release client, attachment selection, URL classification
+  modrinth.py     Modrinth API client, version/file selection
+  http_client.py  synchronous HTTP client built on httpx + tenacity
+  downloader.py   streaming download, validation and atomic replace
+  lockfile.py     rocket.lock reading/writing, entry validation and matching support
+  errors.py       error types and exit codes
+tests/            offline tests (pytest + httpx.MockTransport)
+```

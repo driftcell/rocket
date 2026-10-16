@@ -1,0 +1,47 @@
+[project]
+name = "rocket"
+version = "0.1.0"
+description = "CLI tool to declaratively download the Paper server and plugin JARs"
+readme = "README.md"
+authors = [
+    { name = "driftcell", email = "driftcell@icloud.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "tenacity>=9.2.1",
+]
+
+[project.scripts]
+rocket = "rocket.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+    "ty>=0.0.87",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# keep ambiguous-unicode rules off; all text is plain ASCII
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src", "tests"]
