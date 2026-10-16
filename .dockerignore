@@ -1,0 +1,13 @@
+.git/
+.jj/
+.github/
+.agents/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+**/__pycache__/
+tests/
+artifacts/
+Dockerfile
+.dockerignore

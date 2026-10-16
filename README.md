@@ -45,6 +45,21 @@ rocket --version
 Upgrade with `uv tool upgrade rocket`; uninstall with `uv tool uninstall rocket`. If the shell cannot
 find `rocket` afterwards, run `uv tool update-shell` (or add `~/.local/bin` to `PATH`).
 
+### Container image (GHCR)
+
+Every release also publishes an image to GHCR: `ghcr.io/driftcell/rocket:vX.Y.Z` for the exact
+release, plus `ghcr.io/driftcell/rocket:latest` tracking the newest one. The image's working
+directory is `/data`, so mount the server directory there:
+
+```bash
+docker run --rm -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.8.0 download
+
+# rocket init is interactive; give it a TTY
+docker run --rm -it -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.8.0 init
+```
+
+Pin the tag for reproducible setups; upgrade by pulling the newer tag.
+
 ## Quick start (from a source checkout)
 
 ```bash
