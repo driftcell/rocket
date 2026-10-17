@@ -65,6 +65,7 @@ def coreprotect_version(
     games: list[str] | None = None,
     loaders: list[str] | None = None,
     files: list[dict[str, object]] | None = None,
+    name: str | None = None,
 ) -> dict[str, object]:
     if files is None:
         files = [
@@ -78,6 +79,7 @@ def coreprotect_version(
         ]
     return modrinth_version_payload(
         version_number=version_number,
+        name=name,
         game_versions=games if games is not None else ["1.21.10", "1.21.11", "26.1"],
         loaders=loaders if loaders is not None else ["bukkit", "paper", "spigot"],
         files=files,
@@ -218,13 +220,59 @@ def test_modrinth_ambiguous_same_version_number(tmp_path: Path, capsys) -> None:
         api,
         jar,
         versions=[
-            coreprotect_version(jar, loaders=["paper"]),
-            coreprotect_version(jar, loaders=["bukkit"]),
+            coreprotect_version(jar, loaders=["paper"], name="coreprotect-paper 24.1"),
+            coreprotect_version(jar, loaders=["bukkit"], name="coreprotect-bukkit 24.1"),
         ],
     )
 
     assert run_main(tmp_path, api, plugin_config(PLUGIN)) == 1
-    assert "cannot decide" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "cannot decide" in err
+    assert "coreprotect-paper 24.1" in err
+    assert "coreprotect-bukkit 24.1" in err
+
+
+def test_modrinth_multi_platform_same_version_number(tmp_path: Path) -> None:
+    """One version_number per platform (the MiniMOTD pattern): the PAPER entry wins."""
+    jar = make_plugin_jar_bytes(name="CoreProtect")
+    sponge_url = "https://cdn.modrinth.com/data/abc/versions/xyz/coreprotect-sponge8-24.1.jar"
+    paper_entry = modrinth_version_payload(
+        version_number="24.1",
+        name="coreprotect-paper 24.1",
+        game_versions=["1.21.10", "1.21.11"],
+        loaders=["folia", "paper"],
+        files=[
+            modrinth_file_payload(
+                filename="coreprotect-paper-24.1.jar",
+                url=CDN_URL,
+                size=len(jar),
+                sha512=sha512_hex(jar),
+            )
+        ],
+    )
+    sponge_entry = modrinth_version_payload(
+        version_number="24.1",
+        name="coreprotect-sponge8 24.1",
+        game_versions=["1.21.10", "1.21.11"],
+        loaders=["sponge"],
+        files=[
+            modrinth_file_payload(
+                filename="coreprotect-sponge8-24.1.jar",
+                url=sponge_url,
+                size=1,
+                sha512="0" * 128,
+            )
+        ],
+    )
+    api = FakeAPI()
+    add_paper_routes(api, version="1.21.11")
+    # the non-PAPER entry is listed first on purpose: API order must not decide
+    add_modrinth_routes(api, jar, versions=[sponge_entry, paper_entry])
+    plugin = PLUGIN.replace('asset = "CoreProtect-CE-24.1.jar"\n', "")
+
+    assert run_main(tmp_path, api, plugin_config(plugin)) == 0
+    assert api.count(sponge_url) == 0
+    assert (tmp_path / "artifacts" / "plugins" / "coreprotect.jar").read_bytes() == jar
 
 
 def test_modrinth_picks_compatible_entry(tmp_path: Path) -> None:

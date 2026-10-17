@@ -44,7 +44,6 @@ from .modrinth import (
     PAPER_LOADERS,
     ModrinthFile,
     ModrinthVersion,
-    check_loaders,
     parse_slug,
     select_file,
     select_version,
@@ -866,8 +865,8 @@ class ModrinthProvider(PluginProvider):
             versions,
             version_number=spec.version,
             minecraft_version=minecraft_version,
+            platform=spec.platform,
         )
-        check_loaders(version, platform=spec.platform)
         file = select_file(version, selector=spec.asset)
         if file.checksum is None:
             self.context.log.warning(

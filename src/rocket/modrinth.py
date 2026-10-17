@@ -38,6 +38,7 @@ class ModrinthFile:
 class ModrinthVersion:
     """Minimal required structure of a version."""
 
+    name: str
     version_number: str
     game_versions: tuple[str, ...]
     loaders: tuple[str, ...]
@@ -153,8 +154,13 @@ def select_version(
     *,
     version_number: str,
     minecraft_version: str,
+    platform: str,
 ) -> ModrinthVersion:
-    """Exact version_number match; the target Minecraft version must be included exactly."""
+    """Exact version_number match; the target Minecraft version must be included exactly.
+
+    Several same-number entries (multi-platform projects like MiniMOTD publish one entry
+    per platform) are narrowed by the platform loaders before the ambiguity check.
+    """
     matches = [version for version in versions if version.version_number == version_number]
     if not matches:
         available = ", ".join(version.version_number for version in versions[:8]) or "(none)"
@@ -172,28 +178,27 @@ def select_version(
             hint=f"declared game versions: {_summarize(declared)}; "
             f"nearby versions are not assumed equivalent",
         )
-    if len(compatible) > 1:
+    if platform != "PAPER":
+        raise ProviderError(f"Modrinth provider does not support platform {platform} yet")
+    usable = [version for version in compatible if set(version.loaders) & set(PAPER_LOADERS)]
+    if not usable:
+        declared = sorted({loader for version in compatible for loader in version.loaders})
+        raise ProviderError(
+            f"Modrinth version {version_number!r} is not usable with PAPER "
+            f"(loaders: {_summarize(declared)})",
+            hint="the matched entries target other platforms; "
+            "use the hangar provider or another source for this project",
+        )
+    if len(usable) > 1:
         detail = "; ".join(
-            f"loaders={','.join(version.loaders) or 'none'}" for version in compatible
+            f"{version.name} (loaders={','.join(version.loaders) or 'none'})" for version in usable
         )
         raise ProviderError(
             f"Modrinth version {version_number!r} has multiple entries compatible "
             f"with {minecraft_version}; cannot decide",
             hint=f"entries: {detail}",
         )
-    return compatible[0]
-
-
-def check_loaders(version: ModrinthVersion, *, platform: str) -> None:
-    """Platform and loader compatibility check."""
-    if platform != "PAPER":
-        raise ProviderError(f"Modrinth provider does not support platform {platform} yet")
-    if not set(version.loaders) & set(PAPER_LOADERS):
-        declared = ", ".join(version.loaders) or "none"
-        raise ProviderError(
-            f"Modrinth version {version.version_number!r} is not usable with PAPER "
-            f"(loaders: {declared})",
-        )
+    return usable[0]
 
 
 def select_file(version: ModrinthVersion, *, selector: str | None) -> ModrinthFile:
@@ -241,6 +246,9 @@ def _parse_version(payload: Any) -> ModrinthVersion | None:
     version_number = payload.get("version_number")
     if not isinstance(version_number, str) or not version_number:
         return None
+    name = payload.get("name")
+    if not isinstance(name, str) or not name:
+        name = version_number
     games_raw = payload.get("game_versions")
     game_versions = tuple(str(game) for game in games_raw) if isinstance(games_raw, list) else ()
     loaders_raw = payload.get("loaders")
@@ -259,6 +267,7 @@ def _parse_version(payload: Any) -> ModrinthVersion | None:
         else []
     )
     return ModrinthVersion(
+        name=name,
         version_number=version_number,
         game_versions=game_versions,
         loaders=loaders,
