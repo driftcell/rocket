@@ -487,8 +487,10 @@ def modrinth_version_payload(
     loaders: list[str],
     files: list[dict[str, object]],
     version_type: str = "release",
+    name: str | None = None,
 ) -> dict[str, object]:
     return {
+        "name": name if name is not None else version_number,
         "version_number": version_number,
         "game_versions": game_versions,
         "loaders": loaders,
