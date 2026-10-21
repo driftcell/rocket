@@ -6,12 +6,13 @@ A Python CLI tool that declaratively downloads the Paper server and plugin JARs.
 
 - Reads `server.toml` and downloads the Paper stable build for the declared Minecraft release;
 - Downloads plugins as declared (providers: `hangar`, `github`, `modrinth`, `spiget`, `zrips`; resolvers: `auto`, `direct`, `github_release`);
-- Generates a starter config interactively (`rocket init`), resolving recommended plugin versions;
+- Generates a starter config from defaults or with a wizard (`rocket init [--interactive]`),
+  resolving recommended plugin versions;
 - Finds plugins on Hangar, Modrinth and Spiget (SpigotMC) by keyword (`rocket search`), one ranked
   list with cmd+clickable project links on a TTY;
 - Adds and removes plugin entries without hand-editing TOML (`rocket add` / `rocket remove`);
-- Bumps Paper builds, Minecraft releases and plugin versions interactively (`rocket upgrade`);
-- Pins core or a plugin to any exact version interactively, downgrades included (`rocket pin`);
+- Bumps Paper builds, Minecraft releases and plugin versions (`rocket upgrade [--interactive]`);
+- Pins core or a plugin to any exact version, downgrades included (`rocket pin [--interactive]`);
 - Concurrent downloads (up to 4 at once) with a single live progress bar on a TTY;
 - Streaming download + upstream size/SHA-256 verification + ZIP/JAR validation + per-file atomic replace;
 - Per-item results and a failure exit code; one failing item does not affect the others;
@@ -37,7 +38,8 @@ uv tool install "git+https://github.com/driftcell/rocket@v0.9.0"
 Then run it from anywhere (`--config` defaults to `./server.toml`):
 
 ```bash
-rocket init                     # write a starter server.toml interactively
+rocket init                     # write a starter server.toml from the defaults
+rocket init --interactive       # or pick the Paper version and plugins (-i)
 rocket download --config server.toml
 rocket --version
 ```
@@ -54,8 +56,8 @@ directory is `/data`, so mount the server directory there:
 ```bash
 docker run --rm -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.9.0 download
 
-# rocket init is interactive; give it a TTY
-docker run --rm -it -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.9.0 init
+# add --interactive (and a TTY) to choose versions instead of using the defaults
+docker run --rm -it -v "$PWD:/data" ghcr.io/driftcell/rocket:v0.9.0 init --interactive
 ```
 
 Pin the tag for reproducible setups; upgrade by pulling the newer tag.
@@ -66,8 +68,8 @@ Pin the tag for reproducible setups; upgrade by pulling the newer tag.
 cd rocket
 uv sync
 
-# 1. Generate a starter config interactively (Paper version + recommended plugin versions),
-#    or copy server.example.toml and edit it by hand
+# 1. Generate a starter config (newest Paper + recommended plugin versions), or pass
+#    --interactive to choose them, or copy server.example.toml and edit it by hand
 uv run python -m rocket init
 
 # 2. Download (--config defaults to server.toml in the current working directory)
@@ -101,7 +103,9 @@ version = "5.12.1"
 
 ## Generating a config (`rocket init`)
 
-`rocket init` asks a few questions and writes a starter `server.toml`:
+`rocket init` writes a starter `server.toml`. Without flags it uses the defaults: the newest
+stable Paper release and the whole curated default plugin set. `--interactive` asks a few
+questions instead:
 
 1. **Server type** — `Paper` (the only supported type for now);
 2. **Paper version** — picked from the live Fill version list, newest first (rc/pre builds are
@@ -118,7 +122,8 @@ Minecraft compatibility metadata, so the newest usable release is used as-is. Pl
 cannot be resolved are reported as skipped and left out; the file is still written.
 
 ```bash
-uv run python -m rocket init                       # writes ./server.toml
+uv run python -m rocket init                       # defaults, writes ./server.toml
+uv run python -m rocket init --interactive         # choose versions and plugins (-i)
 uv run python -m rocket init --config my/server.toml --force
 ```
 
@@ -173,7 +178,8 @@ rocket remove luckperms
 
 The generated file pins exact versions and no longer needs an `[http]` section: requests identify
 as `rocket/0.9.0 (https://github.com/driftcell/rocket)` by default — set `http.user_agent` to your
-own email or project URL if you prefer. An existing file is never overwritten without `--force`. Example run:
+own email or project URL if you prefer. An existing file is never overwritten without `--force`.
+Example run of `rocket init --interactive`:
 
 ```text
 Server type: Paper
@@ -189,22 +195,23 @@ next: rocket download
 
 ## Upgrading (`rocket upgrade`)
 
-`rocket upgrade` checks every pin for updates, lets you pick what to apply, then rewrites
-`server.toml` and downloads in one go:
+`rocket upgrade` checks pins for updates, applies them, then rewrites `server.toml` and downloads
+in one go. It is non-interactive by default and applies every available update; `--interactive`
+(short `-i`) asks what to do:
 
 ```bash
-rocket upgrade            # core + plugins, interactively
-rocket upgrade plugins    # plugins only
-rocket upgrade core       # the Paper server only
-rocket upgrade --force    # apply everything without prompting
+rocket upgrade                 # apply every update to core + plugins
+rocket upgrade plugins         # plugins only
+rocket upgrade core            # the Paper server only
+rocket upgrade --interactive   # choose core, plugins or both, then pick the updates
 ```
 
 - **Core upgrades come in three sizes**: a newer Paper build of the same Minecraft release
   (`1.21.11` build 42 → 57), a patch of the current release line (`1.21.11` → `1.21.12`) and a
-  new Minecraft line (`1.21.x` → `26.1.x`). The prompt defaults to the smallest available jump;
-  `--force` takes the newest Minecraft line. A pinned `build` is bumped in `server.toml`; an
-  unpinned build needs no edit — its lock entry is simply re-resolved. A `build` pin never
-  carries over to a new Minecraft release.
+  new Minecraft line (`1.21.x` → `26.1.x`). Without `--interactive` the newest available line is
+  taken; the interactive prompt defaults to the smallest available jump. A pinned `build` is
+  bumped in `server.toml`; an unpinned build needs no edit — its lock entry is simply re-resolved.
+  A `build` pin never carries over to a new Minecraft release.
 - **Plugin upgrades** compare each pin with the newest version the download pipeline could use
   (the same recommendation `rocket add` makes). With `rocket upgrade`, the check runs against
   the Minecraft version you are moving to. GitHub entries pin an exact tag by design and are
@@ -212,32 +219,41 @@ rocket upgrade --force    # apply everything without prompting
 - **Per-item atomicity**: the selected bumps are written to `server.toml` first; an item whose
   download then fails has its pin rolled back to the previous version, so the config, the lock
   and the files on disk always agree. Everything else stays upgraded and the run exits `1`.
-- Without `--force` the command is interactive (like `rocket init`) and refuses to run off a
-  terminal.
+- In interactive mode the target is asked first, and only that target is queried: choose
+  `plugins` and no Paper request is made. Interactive prompts require `--interactive` (or `-i`)
+  and a terminal.
 
 ## Pinning an exact version (`rocket pin`)
 
 `rocket pin` is the fine-grained counterpart of `rocket upgrade`: instead of the newest
 recommendation, you pick any exact version from the provider's catalog — downgrades included.
+It is non-interactive by default: pass the target and `--version` explicitly, or use
+`--interactive` (`-i`) to pick from the live catalog.
 
 ```bash
-rocket pin              # ask what to pin: core or one of the plugins
-rocket pin core         # release line → exact version → build
-rocket pin luckperms    # exact version of one plugin → file, when ambiguous
+rocket pin core --version 1.21.12 --build 57   # exact Paper release and build
+rocket pin core --version 1.21.12              # newest STABLE build, unpinned
+rocket pin luckperms --version 5.5.71          # exact plugin version
+rocket pin luckperms --version 5.5.71 --asset LuckPerms-Bukkit-5.5.71.jar
+rocket pin --interactive                       # ask what to pin
+rocket pin core --interactive                  # release line → exact version → build
+rocket pin luckperms --interactive             # exact version → file, when ambiguous
 ```
 
-- **Core** is a two-level choice: the release line (`26.3`, `26.1`, `1.21`…), then the exact
-  version in it, then the build — "always the newest STABLE build (unpinned)" or a specific
-  pinned build id.
-- **Plugins** list every version usable with the configured Minecraft version (all Hangar
-  channels, Modrinth release/beta/alpha, GitHub release tags, Spiget versions labeled with
-  their release date, and zrips.net listings labeled with their upload date — an explicit pick,
-  so no "newest" heuristics anywhere). When the chosen version ships several JARs, a second
-  prompt selects the file.
+- **Core** takes the exact release via `--version` and an optional `--build`; without a build it
+  pins "always the newest STABLE build (unpinned)". The interactive flow asks for the release
+  line (`26.3`, `26.1`, `1.21`…), then the exact version, then the build.
+- **Plugins** take the exact version via `--version` and an optional `--asset`; `--asset` is
+  needed when that release ships several JARs. The interactive flow lists every version usable
+  with the configured Minecraft version (all Hangar channels, Modrinth release/beta/alpha,
+  GitHub release tags, Spiget versions labeled with their release date, and zrips.net listings
+  labeled with their upload date — an explicit pick, so no "newest" heuristics anywhere).
+- `--build` only applies to core and `--asset` only to plugins. `--interactive` cannot be
+  combined with `--version`, `--build` or `--asset`.
 - Selecting what is already pinned prints `nothing to change`. Otherwise the same per-item
   atomicity as `rocket upgrade` applies: the pin is written first, and a failed download rolls
-  it back. The command is interactive-only; off a terminal it refuses to run (pin by hand and
-  run `rocket download` instead).
+  it back. Off a terminal, non-interactive pinning still works; `--interactive` refuses to run
+  without a TTY.
 
 ## Run from a source checkout
 
@@ -394,7 +410,7 @@ data only and is never executed.
 | --- | --- |
 | `httpx` | HTTP client: timeouts, TLS verification, streaming reads, built-in redirect following (up to 5) |
 | `tenacity` | bounded retries and exponential backoff (network errors, 429, 5xx; respects `Retry-After`, capped at 60 seconds) |
-| `questionary` | interactive prompts for `rocket init` |
+| `questionary` | interactive prompts for `rocket init`, `rocket upgrade` and `rocket pin` |
 | `tomli-w` | writing server.toml from `rocket init` (reading still uses the standard library) |
 | `tqdm` | the single download progress bar; disables itself off a TTY, so CI and scripts see plain output |
 | `blessed` | terminal styling and OSC 8 hyperlinks (search results, download lines, error hints); disables itself off a TTY |
@@ -461,7 +477,7 @@ Hangar external link → GitHub Release (EssentialsX modules), and native Modrin
 src/rocket/
   __main__.py     python -m rocket entry point
   cli.py          download/init/search/add/remove/upgrade/pin subcommands, per-item results, exit codes
-  wizard.py       init: interactive prompts, recommendations and server.toml output
+  wizard.py       init: defaults or interactive prompts, recommendations and server.toml output
   catalog.py      init: curated default plugin catalog + {version} asset templates
   recommend.py    init/add/upgrade: per-catalog recommendation orchestration
   console.py      shared styling and error-printing helpers

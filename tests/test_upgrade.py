@@ -114,6 +114,7 @@ def add_coreprotect_update_routes(api: FakeAPI, jar: bytes) -> None:
 
 
 def test_upgrade_plugins_interactive_bumps_version(tmp_path: Path, capsys) -> None:
+    # the target is given, so --interactive only asks which plugin updates to apply
     api = FakeAPI()
     add_paper_routes(api)
     jar = make_plugin_jar_bytes(name="Good11")
@@ -121,7 +122,11 @@ def test_upgrade_plugins_interactive_bumps_version(tmp_path: Path, capsys) -> No
     prompter = ScriptedPrompter(checkbox=None)  # None accepts every preselected entry
 
     code = run_upgrade(
-        tmp_path, api, base_config(GOOD_PLUGIN), argv=["upgrade", "plugins"], prompter=prompter
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN),
+        argv=["upgrade", "plugins", "-i"],
+        prompter=prompter,
     )
 
     assert code == 0
@@ -129,13 +134,13 @@ def test_upgrade_plugins_interactive_bumps_version(tmp_path: Path, capsys) -> No
     assert 'version = "1.1.0"' in config_text
     assert (tmp_path / "artifacts" / "plugins" / "good.jar").read_bytes() == jar
     out = capsys.readouterr().out
-    assert "Checking updates for Paper 26.1.2 + 1 plugin..." in out
+    assert "Checking updates for 1 plugin against Paper 26.1.2..." in out
     assert " + good.jar (1.1.0, hangar)" in out
     assert ("checkbox", "Plugins to upgrade") in prompter.calls
     assert not any(kind == "select" for kind, _ in prompter.calls)
 
 
-def test_upgrade_plugins_spiget_force_bumps_version(tmp_path: Path, capsys) -> None:
+def test_upgrade_plugins_spiget_bumps_version(tmp_path: Path, capsys) -> None:
     api = FakeAPI()
     add_paper_routes(api)
     jar = make_plugin_jar_bytes(name="LuckPerms5571")
@@ -155,7 +160,7 @@ def test_upgrade_plugins_spiget_force_bumps_version(tmp_path: Path, capsys) -> N
         '[plugins.luckperms]\nprovider = "spiget"\nproject = "28140"\nversion = "5.5.0"\n'
     )
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -176,7 +181,7 @@ def test_upgrade_plugins_modrinth_asset_template(tmp_path: Path, capsys) -> None
         tmp_path,
         api,
         base_config(COREPROTECT_PLUGIN),
-        argv=["upgrade", "plugins", "--force"],
+        argv=["upgrade", "plugins"],
     )
 
     assert code == 0
@@ -209,7 +214,7 @@ def test_upgrade_nothing_to_do(tmp_path: Path, capsys) -> None:
     )
     text = base_config(GOOD_PLUGIN.replace('"1.0.0"', '"1.1.0"'))
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 0
     assert "everything is up to date" in capsys.readouterr().out
@@ -222,7 +227,7 @@ def test_upgrade_github_entry_is_noted_and_skipped(tmp_path: Path, capsys) -> No
         '[plugins.vault]\nprovider = "github"\nproject = "MilkBowl/Vault"\nversion = "1.7.3"\n'
     )
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 0
     out = capsys.readouterr().out
@@ -261,7 +266,7 @@ def test_upgrade_rolls_back_failed_pins(tmp_path: Path, capsys) -> None:
         + '\n[plugins.bad]\nprovider = "hangar"\nproject = "Owner/Bad"\nversion = "1.0.0"\n'
     )
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 1
     config_text = (tmp_path / "server.toml").read_text()
@@ -276,9 +281,7 @@ def test_upgrade_check_failure_exits_1(tmp_path: Path, capsys) -> None:
     api = FakeAPI()
     api.add_json(hangar_versions_url("Good", platform_version="26.1.2"), {"error": "x"}, status=500)
 
-    code = run_upgrade(
-        tmp_path, api, base_config(GOOD_PLUGIN), argv=["upgrade", "plugins", "--force"]
-    )
+    code = run_upgrade(tmp_path, api, base_config(GOOD_PLUGIN), argv=["upgrade", "plugins"])
 
     assert code == 1
     captured = capsys.readouterr()
@@ -319,7 +322,7 @@ def test_upgrade_modrinth_v_prefixed_tag_appears_differently_in_filenames(
         'version = "v5.5.60"\nasset = "LuckPerms-Bukkit-5.5.60.jar"\n'
     )
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -357,7 +360,7 @@ def test_upgrade_modrinth_ambiguous_files_report_a_check_failure(tmp_path: Path,
     )
     text = base_config(COREPROTECT_PLUGIN)
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "plugins"])
 
     assert code == 1
     assert "multiple JAR files" in capsys.readouterr().err
@@ -375,14 +378,75 @@ def test_asset_template_recovers_every_filename_form() -> None:
     assert asset_template("plugin.jar", "1.0.0") == "plugin.jar"
 
 
-def test_upgrade_non_tty_without_force_fails(tmp_path: Path, capsys) -> None:
+def test_upgrade_interactive_non_tty_fails_before_checking(tmp_path: Path, capsys) -> None:
     api = FakeAPI()
 
-    code = run_upgrade(tmp_path, api, base_config(GOOD_PLUGIN), argv=["upgrade", "plugins"])
+    code = run_upgrade(
+        tmp_path, api, base_config(GOOD_PLUGIN), argv=["upgrade", "plugins", "--interactive"]
+    )
 
     assert code == 1
-    assert "interactive" in capsys.readouterr().err
+    assert "--interactive requires a terminal" in capsys.readouterr().err
     assert api.requests == []
+
+
+def test_upgrade_interactive_chooses_the_target_before_checking(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    jar = make_plugin_jar_bytes(name="Good11")
+    text = base_config(GOOD_PLUGIN.replace('"1.0.0"', '"1.1.0"'))
+    api.add_json(
+        hangar_versions_url("Good", platform_version="26.1.2"),
+        hangar_version_list_payload([hangar_version_list_item(name="1.1.0")]),
+    )
+    api.add_json(
+        hangar_version_url("Good", "1.1.0"),
+        hangar_version_payload(
+            name="1.1.0",
+            downloads=hangar_native_paper(
+                download_url=GOOD_1_1_URL,
+                name="Good-1.1.0.jar",
+                sha256=sha256_hex(jar),
+                size=len(jar),
+            ),
+            platform_dependencies={"PAPER": ["26.1.2"]},
+        ),
+    )
+    prompter = ScriptedPrompter(select=["plugins"])
+
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "--interactive"], prompter=prompter)
+
+    assert code == 0
+    assert "everything is up to date" in capsys.readouterr().out
+    assert prompter.calls == [("select", "What to upgrade")]
+    assert prompter.choices["What to upgrade"] == ["core", "plugins", "all"]
+    assert FILL_PROJECTS_URL not in api.urls()  # only the chosen target was checked
+
+
+def test_upgrade_default_applies_everything_without_prompts(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    api.add_json(
+        FILL_PROJECTS_URL,
+        fill_project_payload({"26.2": ["26.2.0"], "26.1": ["26.1.1"]}),
+    )
+    paper_jar = make_paper_jar_bytes(main_class="io.papermc.paper.NewMain")
+    add_fill_builds(api, "26.2.0", [(3, paper_jar)])
+    plugin_jar = make_plugin_jar_bytes(name="Good11")
+    add_good_update_routes(api, plugin_jar, mc="26.2.0")
+
+    code = run_upgrade(
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN, paper_version="26.1.1"),
+        argv=["upgrade"],
+    )
+
+    assert code == 0
+    config_text = (tmp_path / "server.toml").read_text()
+    assert 'version = "26.2.0"' in config_text
+    assert 'version = "1.1.0"' in config_text
+    assert (tmp_path / "artifacts" / "paper.jar").read_bytes() == paper_jar
+    assert (tmp_path / "artifacts" / "plugins" / "good.jar").read_bytes() == plugin_jar
+    assert "Checking updates for Paper 26.1.1 + 1 plugin..." in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +469,9 @@ def test_upgrade_core_patch_is_the_default_choice(tmp_path: Path, capsys) -> Non
     )
     prompter = ScriptedPrompter(select=["0"])  # default: the patch, not the major jump
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"], prompter=prompter)
+    code = run_upgrade(
+        tmp_path, api, text, argv=["upgrade", "core", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -418,7 +484,7 @@ def test_upgrade_core_patch_is_the_default_choice(tmp_path: Path, capsys) -> Non
     assert choices == ["0", "1", "keep"]
 
 
-def test_upgrade_core_force_takes_the_major(tmp_path: Path) -> None:
+def test_upgrade_core_non_interactive_takes_the_major(tmp_path: Path) -> None:
     api = FakeAPI()
     api.add_json(
         FILL_PROJECTS_URL,
@@ -428,7 +494,7 @@ def test_upgrade_core_force_takes_the_major(tmp_path: Path) -> None:
     add_fill_builds(api, "26.2.0", [(3, new_jar)])
     text = base_config("", paper_version="26.1.1")
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"])
 
     assert code == 0
     assert 'version = "26.2.0"' in (tmp_path / "server.toml").read_text()
@@ -444,7 +510,9 @@ def test_upgrade_core_keep_leaves_everything(tmp_path: Path, capsys) -> None:
     text = base_config("", paper_version="26.1.1")
     prompter = ScriptedPrompter(select=["keep"])
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"], prompter=prompter)
+    code = run_upgrade(
+        tmp_path, api, text, argv=["upgrade", "core", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     assert "everything is up to date" in capsys.readouterr().out
@@ -469,7 +537,9 @@ def test_upgrade_core_build_bump_unpinned_only_refreshes_the_lock(tmp_path: Path
     add_fill_builds(api, "26.1.2", [(42, old_jar), (57, new_jar)])
     prompter = ScriptedPrompter(select=["0"])
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"], prompter=prompter)
+    code = run_upgrade(
+        tmp_path, api, text, argv=["upgrade", "core", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     assert (tmp_path / "server.toml").read_text() == text  # unpinned: no config rewrite at all
@@ -487,7 +557,7 @@ def test_upgrade_core_build_bump_pinned_rewrites_the_pin(tmp_path: Path) -> None
         'version = "26.1.2"', 'version = "26.1.2"\nbuild = 42'
     )
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"])
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -500,7 +570,7 @@ def test_upgrade_core_already_up_to_date(tmp_path: Path, capsys) -> None:
     api.add_json(FILL_PROJECTS_URL, fill_project_payload({"26.2": ["26.2.0"]}))
     text = base_config("", paper_version="26.2.0")
 
-    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core", "--force"])
+    code = run_upgrade(tmp_path, api, text, argv=["upgrade", "core"])
 
     assert code == 0
     assert "everything is up to date" in capsys.readouterr().out
@@ -522,7 +592,7 @@ def test_upgrade_all_cascades_plugin_checks_to_the_new_core(tmp_path: Path, caps
         tmp_path,
         api,
         base_config(GOOD_PLUGIN, paper_version="26.1.1"),
-        argv=["upgrade"],
+        argv=["upgrade", "all", "--interactive"],
         prompter=prompter,
     )
 

@@ -122,7 +122,7 @@ def main(
     )
     init_parser = subparsers.add_parser(
         "init",
-        help="Interactively generate a starter server.toml",
+        help="Generate a starter server.toml",
     )
     init_parser.add_argument(
         "--config",
@@ -133,6 +133,12 @@ def main(
         "--force",
         action="store_true",
         help="overwrite an existing config file",
+    )
+    init_parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="ask for the Paper version and plugins instead of using defaults",
     )
     search_parser = subparsers.add_parser(
         "search",
@@ -185,14 +191,14 @@ def main(
     )
     upgrade_parser = subparsers.add_parser(
         "upgrade",
-        help="Check for newer versions, pick what to bump, then download",
+        help="Check for newer versions, apply the updates, then download",
     )
     upgrade_parser.add_argument(
         "target",
         nargs="?",
-        default="all",
+        default=None,
         choices=("all", "plugins", "core"),
-        help="what to upgrade (default: all)",
+        help="what to upgrade (default: all; --interactive asks)",
     )
     upgrade_parser.add_argument(
         "--config",
@@ -200,31 +206,51 @@ def main(
         help="path to the config file (default: ./server.toml)",
     )
     upgrade_parser.add_argument(
-        "--force",
+        "-i",
+        "--interactive",
         action="store_true",
-        help="apply every available update without prompting "
-        "(core jumps to the newest Minecraft line)",
+        help="choose the target, Paper jump and plugin updates interactively",
     )
     pin_parser = subparsers.add_parser(
         "pin",
-        help="Interactively pin core or a plugin to an exact version, then download",
+        help="Pin core or a plugin to an exact version, then download",
     )
     pin_parser.add_argument(
         "target",
         nargs="?",
         default=None,
-        help="what to pin: 'core' or a plugin id (default: ask)",
+        help="what to pin: 'core' or a plugin id (default: required unless --interactive)",
     )
     pin_parser.add_argument(
         "--config",
         default="server.toml",
         help="path to the config file (default: ./server.toml)",
+    )
+    pin_parser.add_argument(
+        "--version",
+        help="exact version to pin (required unless --interactive)",
+    )
+    pin_parser.add_argument(
+        "--build",
+        type=int,
+        help="Paper build id to pin; core only (default: newest STABLE build, unpinned)",
+    )
+    pin_parser.add_argument(
+        "--asset",
+        help="exact upstream filename; plugin only, needed when a release has multiple files",
+    )
+    pin_parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="choose the target, version and file interactively",
     )
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(
             Path(args.config),
             force=args.force,
+            interactive=args.interactive,
             transport=transport,
             sleep=sleep,
             prompter=prompter,
@@ -246,7 +272,7 @@ def main(
     if args.command == "upgrade":
         return run_upgrade(
             args.target,
-            force=args.force,
+            interactive=args.interactive,
             config_path=Path(args.config),
             transport=transport,
             sleep=sleep,
@@ -255,6 +281,10 @@ def main(
     if args.command == "pin":
         return run_pin(
             args.target,
+            version=args.version,
+            build=args.build,
+            asset=args.asset,
+            interactive=args.interactive,
             config_path=Path(args.config),
             transport=transport,
             sleep=sleep,
@@ -835,25 +865,27 @@ class _PluginUpdate:
 
 
 def run_upgrade(
-    target: str,
+    target: str | None,
     *,
-    force: bool,
+    interactive: bool,
     config_path: Path,
     transport: httpx.BaseTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
     prompter: Prompter | None = None,
 ) -> int:
-    """Check for newer versions, pick what to bump, rewrite server.toml and download.
+    """Check for newer versions, apply the selected bumps, rewrite server.toml and download.
 
-    Returns 0 when everything applied (or nothing needed doing), 1 on check/download
-    failures, 2 on invalid config. ``transport``/``sleep``/``prompter`` are only for
-    test injection.
+    Non-interactive runs apply every available update (a core bump takes the newest Minecraft
+    line). ``--interactive`` chooses the target first and then the Paper jump and plugin
+    updates. Returns 0 when everything applied (or nothing needed doing), 1 on check/download
+    failures, 2 on invalid config. ``transport``/``sleep``/``prompter`` are only for test
+    injection.
     """
-    if prompter is None and not force:
+    if interactive and prompter is None:
         if not stdin_is_tty():
             print_error(
-                "rocket upgrade is interactive; run it in a terminal",
-                hint="or pass --force to apply every available update without prompting",
+                "rocket upgrade --interactive requires a terminal",
+                hint="run it in a terminal, or omit --interactive to apply every update",
             )
             return EXIT_FAILURE
         prompter = QuestionaryPrompter()
@@ -861,7 +893,7 @@ def run_upgrade(
     try:
         return _run_upgrade(
             target,
-            force=force,
+            interactive=interactive,
             config_path=config_path,
             transport=transport,
             sleep=sleep,
@@ -872,9 +904,9 @@ def run_upgrade(
 
 
 def _run_upgrade(
-    target: str,
+    target: str | None,
     *,
-    force: bool,
+    interactive: bool,
     config_path: Path,
     transport: httpx.BaseTransport | None,
     sleep: Callable[[float], None],
@@ -888,10 +920,35 @@ def _run_upgrade(
     for warning in config.warnings:
         _log.warning("config warning: %s", warning)
 
-    print(
-        f"Checking updates for Paper {config.paper.version} "
-        f"+ {_plural(len(config.plugins), 'plugin')}..."
-    )
+    selected_target = target
+    if selected_target is None:
+        if interactive:
+            if prompter is None:  # unreachable: the guard in run_upgrade provides one
+                raise RocketError("internal error: interactive upgrade requires a prompter")
+            selected_target = prompter.select(
+                "What to upgrade",
+                [
+                    ("Paper core", "core"),
+                    ("plugins", "plugins"),
+                    ("Paper core + plugins", "all"),
+                ],
+                default="all",
+            )
+        else:
+            selected_target = "all"
+
+    if selected_target == "core":
+        print(f"Checking Paper {config.paper.version} for updates...")
+    elif selected_target == "plugins":
+        print(
+            f"Checking updates for {_plural(len(config.plugins), 'plugin')} "
+            f"against Paper {config.paper.version}..."
+        )
+    else:
+        print(
+            f"Checking updates for Paper {config.paper.version} "
+            f"+ {_plural(len(config.plugins), 'plugin')}..."
+        )
     check_failed = False
     with HTTPClient(
         user_agent=config.http.user_agent,
@@ -902,7 +959,7 @@ def _run_upgrade(
         github_token=os.environ.get("GITHUB_TOKEN"),
     ) as http:
         core_choice: _CoreChoice | None = None
-        if target in ("all", "core"):
+        if selected_target in ("all", "core"):
             try:
                 candidates = _core_candidates(config, http=http)
             except RocketError as exc:
@@ -913,19 +970,22 @@ def _run_upgrade(
                 _print_unexpected_error("core", exc)
             else:
                 core_choice = _choose_core(
-                    config.paper.version, candidates, force=force, prompter=prompter
+                    config.paper.version,
+                    candidates,
+                    interactive=interactive,
+                    prompter=prompter,
                 )
 
         new_mc = (
             str(core_choice.value) if core_choice is not None and core_choice.kind == "mc" else None
         )
         updates: list[_PluginUpdate] = []
-        if target in ("all", "plugins"):
+        if selected_target in ("all", "plugins"):
             updates, plugin_check_failed = _check_plugin_updates(
                 config, minecraft_version=new_mc or config.paper.version, http=http
             )
             check_failed = check_failed or plugin_check_failed
-            if updates and not force:
+            if updates and interactive:
                 if prompter is None:  # unreachable: the guard in run_upgrade provides one
                     raise RocketError("internal error: interactive upgrade requires a prompter")
                 chosen = set(
@@ -976,7 +1036,7 @@ def _run_upgrade(
         sleep=sleep,
     )
 
-    core_moved = target == "core" and new_mc is not None and "paper" not in failed_ids
+    core_moved = selected_target == "core" and new_mc is not None and "paper" not in failed_ids
     if core_moved:
         print(
             f"next: rocket upgrade plugins   # re-check plugin compatibility "
@@ -1057,7 +1117,11 @@ def _core_candidates(config: Config, *, http: HTTPClient) -> _CoreCandidates:
 
 
 def _choose_core(
-    current: str, candidates: _CoreCandidates, *, force: bool, prompter: Prompter | None
+    current: str,
+    candidates: _CoreCandidates,
+    *,
+    interactive: bool,
+    prompter: Prompter | None,
 ) -> _CoreChoice | None:
     options: list[tuple[str, _CoreChoice]] = []
     if candidates.build is not None:
@@ -1083,8 +1147,8 @@ def _choose_core(
         )
     if not options:
         return None
-    if force:
-        return options[-1][1]  # --force: the full jump
+    if not interactive:
+        return options[-1][1]  # non-interactive: the full jump
     if prompter is None:  # unreachable: the guard in run_upgrade provides one
         raise RocketError("internal error: interactive upgrade requires a prompter")
     keep = "keep"
@@ -1164,20 +1228,43 @@ _PIN_AUTO_BUILD = "__auto__"
 def run_pin(
     target: str | None,
     *,
+    version: str | None,
+    build: int | None,
+    asset: str | None,
+    interactive: bool,
     config_path: Path,
     transport: httpx.BaseTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
     prompter: Prompter | None = None,
 ) -> int:
-    """Interactively pin core or one plugin to an exact version, then download.
+    """Pin core or one plugin to an exact version, then download.
 
-    Returns 0 when the pin applied (or nothing needed changing), 1 on failures, 2 on
-    invalid config. ``transport``/``sleep``/``prompter`` are only for test injection.
+    Non-interactive runs require ``target`` and ``version``; ``--build`` selects a Paper build
+    and ``--asset`` selects a plugin file. ``--interactive`` chooses the target, version and
+    file with prompts. Returns 0 when the pin applied (or nothing needed changing), 1 on
+    failures, 2 on invalid config. ``transport``/``sleep``/``prompter`` are only for test
+    injection.
     """
+    if interactive and prompter is None:
+        if not stdin_is_tty():
+            print_error(
+                "rocket pin --interactive requires a terminal",
+                hint="run it in a terminal, or pass the target and --version explicitly",
+            )
+            return EXIT_FAILURE
+        prompter = QuestionaryPrompter()
     handler = install_logging()
     try:
         return _run_pin(
-            target, config_path=config_path, transport=transport, sleep=sleep, prompter=prompter
+            target,
+            version=version,
+            build=build,
+            asset=asset,
+            interactive=interactive,
+            config_path=config_path,
+            transport=transport,
+            sleep=sleep,
+            prompter=prompter,
         )
     finally:
         remove_logging(handler)
@@ -1186,6 +1273,10 @@ def run_pin(
 def _run_pin(
     target: str | None,
     *,
+    version: str | None,
+    build: int | None,
+    asset: str | None,
+    interactive: bool,
     config_path: Path,
     transport: httpx.BaseTransport | None,
     sleep: Callable[[float], None],
@@ -1207,29 +1298,78 @@ def _run_pin(
             print_error(f"no plugin with id {target!r}", hint=f"available targets: core, {ids}")
             return EXIT_FAILURE
 
-    if prompter is None:
-        if not stdin_is_tty():
+    paper_pin: PaperPin | None = None
+    plugin_pin: PluginPin | None = None
+    if interactive:
+        if version is not None or build is not None or asset is not None:
             print_error(
-                "rocket pin is interactive; run it in a terminal",
-                hint="or pin an exact version by hand, then run rocket download",
+                "cannot combine --interactive with --version, --build or --asset",
+                hint="omit the exact-value flags; --interactive asks for them",
             )
             return EXIT_FAILURE
-        prompter = QuestionaryPrompter()
-
-    if target is None:
-        if not config.plugins:
-            target = "core"
+        if target is None:
+            if not config.plugins:
+                target = "core"
+            else:
+                if prompter is None:  # unreachable: the guard in run_pin provides one
+                    raise RocketError("internal error: interactive pin requires a prompter")
+                choices = [("Paper core", "core")]
+                choices += [
+                    (f"plugin {item.id} ({item.provider}:{item.project})", item.id)
+                    for item in config.plugins
+                ]
+                target = prompter.select("What to pin", choices, default="core")
+            if target != "core":
+                plugin = next((item for item in config.plugins if item.id == target), None)
+                if plugin is None:  # unreachable: the choices come from the config itself
+                    raise RocketError(f"internal error: plugin {target!r} vanished from the config")
+    else:
+        if target is None:
+            print_error(
+                "rocket pin needs a target",
+                hint="pass 'core' or a plugin id, or use --interactive to choose",
+            )
+            return EXIT_FAILURE
+        if version is None:
+            print_error(
+                "rocket pin needs --version",
+                hint="pass the exact version, or use --interactive to choose",
+            )
+            return EXIT_FAILURE
+        version = version.strip()
+        if not version:
+            print_error("--version must not be empty")
+            return EXIT_FAILURE
+        if asset is not None:
+            asset = asset.strip()
+            if not asset:
+                print_error("--asset must not be empty")
+                return EXIT_FAILURE
+        if plugin is None:
+            if asset is not None:
+                print_error(
+                    "--asset only applies to plugins",
+                    hint="pin a plugin id instead of core, or omit --asset",
+                )
+                return EXIT_FAILURE
+            if build is not None and build < 1:
+                print_error("--build must be a positive integer")
+                return EXIT_FAILURE
+            if version == config.paper.version and build == config.paper.build:
+                print("nothing to change")
+                return EXIT_OK
+            paper_pin = PaperPin(version=version, build=build)
         else:
-            choices = [("Paper core", "core")]
-            choices += [
-                (f"plugin {item.id} ({item.provider}:{item.project})", item.id)
-                for item in config.plugins
-            ]
-            target = prompter.select("What to pin", choices, default="core")
-        if target != "core":
-            plugin = next((item for item in config.plugins if item.id == target), None)
-            if plugin is None:  # unreachable: the choices come from the config itself
-                raise RocketError(f"internal error: plugin {target!r} vanished from the config")
+            if build is not None:
+                print_error(
+                    "--build only applies to core",
+                    hint="pin core instead, or omit --build",
+                )
+                return EXIT_FAILURE
+            if version == plugin.version and asset == plugin.asset:
+                print("nothing to change")
+                return EXIT_OK
+            plugin_pin = PluginPin(version=version, asset=asset)
 
     with HTTPClient(
         user_agent=config.http.user_agent,
@@ -1240,11 +1380,14 @@ def _run_pin(
         github_token=os.environ.get("GITHUB_TOKEN"),
     ) as http:
         try:
-            if plugin is None:
-                paper_pin = _pin_core(config, http=http, prompter=prompter)
-                if paper_pin is None:
-                    print("nothing to change")
-                    return EXIT_OK
+            if interactive:
+                if plugin is None:
+                    paper_pin = _pin_core(config, http=http, prompter=_require_prompter(prompter))
+                else:
+                    plugin_pin = _pin_plugin(
+                        plugin, config, http=http, prompter=_require_prompter(prompter)
+                    )
+            if paper_pin is not None:
                 exit_code, _failed = _apply_pins_and_download(
                     config_path,
                     paper=paper_pin,
@@ -1255,11 +1398,7 @@ def _run_pin(
                     transport=transport,
                     sleep=sleep,
                 )
-            else:
-                plugin_pin = _pin_plugin(plugin, config, http=http, prompter=prompter)
-                if plugin_pin is None:
-                    print("nothing to change")
-                    return EXIT_OK
+            elif plugin is not None and plugin_pin is not None:
                 exit_code, _failed = _apply_pins_and_download(
                     config_path,
                     paper=None,
@@ -1272,13 +1411,22 @@ def _run_pin(
                     transport=transport,
                     sleep=sleep,
                 )
+            else:
+                print("nothing to change")
+                return EXIT_OK
         except RocketError as exc:
             print_error(exc.message, hint=exc.hint)
             return EXIT_FAILURE
         except Exception as exc:
-            _print_unexpected_error(target, exc)
+            _print_unexpected_error(target or "pin", exc)
             return EXIT_FAILURE
     return exit_code
+
+
+def _require_prompter(prompter: Prompter | None) -> Prompter:
+    if prompter is None:  # unreachable: the guards in run_pin/_run_pin provide one
+        raise RocketError("internal error: interactive pin requires a prompter")
+    return prompter
 
 
 def _pin_core(config: Config, *, http: HTTPClient, prompter: Prompter) -> PaperPin | None:

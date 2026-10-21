@@ -1,4 +1,4 @@
-"""Interactive ``rocket init`` wizard: a few questions, recommended versions, server.toml."""
+"""``rocket init``: default or interactive choices, recommended versions, server.toml."""
 
 from __future__ import annotations
 
@@ -99,18 +99,24 @@ def run_init(
     config_path: Path,
     *,
     force: bool = False,
+    interactive: bool = False,
     transport: httpx.BaseTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
     prompter: Prompter | None = None,
     catalog: Sequence[CatalogPlugin] = DEFAULT_PLUGINS,
 ) -> int:
-    """Run the wizard; return the process exit code (0 written, 1 aborted/failed).
+    """Write a starter config; return the process exit code (0 written, 1 aborted/failed).
 
-    ``transport``/``sleep``/``prompter``/``catalog`` are only for test injection.
+    Non-interactive runs use the newest Paper release and the whole default plugin catalog.
+    ``--interactive`` runs the wizard instead. ``transport``/``sleep``/``prompter``/``catalog``
+    are only for test injection.
     """
-    if prompter is None:
+    if interactive and prompter is None:
         if not _stdin_is_tty():
-            print_error("rocket init is interactive; run it in a terminal")
+            print_error(
+                "rocket init --interactive requires a terminal",
+                hint="run it in a terminal, or omit --interactive to use the defaults",
+            )
             return EXIT_FAILURE
         prompter = QuestionaryPrompter()
     handler = install_logging()
@@ -118,6 +124,7 @@ def run_init(
         return _run_init(
             config_path,
             force=force,
+            interactive=interactive,
             transport=transport,
             sleep=sleep,
             prompter=prompter,
@@ -134,9 +141,10 @@ def _run_init(
     config_path: Path,
     *,
     force: bool,
+    interactive: bool,
     transport: httpx.BaseTransport | None,
     sleep: Callable[[float], None],
-    prompter: Prompter,
+    prompter: Prompter | None,
     catalog: Sequence[CatalogPlugin],
 ) -> int:
     if config_path.exists() and not force:
@@ -146,21 +154,28 @@ def _run_init(
         )
         return EXIT_FAILURE
 
-    server_type = prompter.select("Server type", _SERVER_TYPE_CHOICES, default="paper")
-    if server_type != "paper":
-        print_error(f"unsupported server type: {server_type!r}")
-        return EXIT_FAILURE
-
     with HTTPClient(
         user_agent=INIT_USER_AGENT,
         transport=transport,
         sleep=sleep,
         github_token=os.environ.get("GITHUB_TOKEN"),
     ) as http:
-        paper_version = _ask_paper_version(prompter, http)
-        if paper_version is None:
-            return EXIT_FAILURE
-        selected = _ask_plugins(prompter, catalog)
+        if interactive:
+            if prompter is None:  # unreachable: the guard in run_init provides one
+                raise RocketError("internal error: interactive init requires a prompter")
+            server_type = prompter.select("Server type", _SERVER_TYPE_CHOICES, default="paper")
+            if server_type != "paper":
+                print_error(f"unsupported server type: {server_type!r}")
+                return EXIT_FAILURE
+            paper_version = _ask_paper_version(prompter, http)
+            if paper_version is None:
+                return EXIT_FAILURE
+            selected = _ask_plugins(prompter, catalog)
+        else:
+            paper_version = _default_paper_version(http)
+            if paper_version is None:
+                return EXIT_FAILURE
+            selected = tuple(catalog)
         if selected:
             print(f"Resolving {len(selected)} plugins for Paper {paper_version}...")
             result = recommend_plugins(selected, minecraft_version=paper_version, http=http)
@@ -183,6 +198,24 @@ def _run_init(
     else:
         print(f"next: rocket download --config {config_path}")
     return EXIT_OK
+
+
+def _default_paper_version(http: HTTPClient) -> str | None:
+    try:
+        versions = list_paper_versions(http)
+    except RocketError as exc:
+        print_error(
+            f"cannot list Paper versions ({exc.message})",
+            hint="run rocket init --interactive and enter a version manually",
+        )
+        return None
+    if not versions:
+        print_error(
+            "no Paper releases available",
+            hint="run rocket init --interactive and enter a version manually",
+        )
+        return None
+    return versions[0]
 
 
 def _ask_paper_version(prompter: Prompter, http: HTTPClient) -> str | None:
