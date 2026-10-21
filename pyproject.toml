@@ -1,6 +1,6 @@
 [project]
 name = "rocket"
-version = "0.9.0"
+version = "1.0.0"
 description = "CLI tool to declaratively download the Paper server and plugin JARs"
 readme = "README.md"
 authors = [
