@@ -97,7 +97,7 @@ def test_pin_core_two_level_select_with_auto_build(tmp_path: Path) -> None:
     text = base_config("", paper_version="26.1.1")
     prompter = ScriptedPrompter(select=["26.1", "26.1.2", "__auto__"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "core"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "core", "-i"], prompter=prompter)
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -120,7 +120,7 @@ def test_pin_core_specific_build_pinned(tmp_path: Path) -> None:
     text = base_config("", paper_version="26.1.2")
     prompter = ScriptedPrompter(select=["26.1", "26.1.2", "57"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "core"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "core", "-i"], prompter=prompter)
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -136,7 +136,7 @@ def test_pin_core_no_change_skips_download(tmp_path: Path, capsys) -> None:
     text = base_config("", paper_version="26.1.2")
     prompter = ScriptedPrompter(select=["26.1", "26.1.2", "__auto__"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "core"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "core", "-i"], prompter=prompter)
 
     assert code == 0
     assert "nothing to change" in capsys.readouterr().out
@@ -166,7 +166,7 @@ def test_pin_plugin_hangar_downgrade(tmp_path: Path) -> None:
     text = base_config(GOOD_PLUGIN.replace('"1.0.0"', '"1.1.0"'))
     prompter = ScriptedPrompter(select=["1.0.0"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "good"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "good", "--interactive"], prompter=prompter)
 
     assert code == 0
     assert 'version = "1.0.0"' in (tmp_path / "server.toml").read_text()
@@ -191,7 +191,13 @@ def test_pin_plugin_hangar_lists_snapshot_channel(tmp_path: Path) -> None:
     add_good_download_routes(api, "1.2.0-SNAPSHOT", snapshot_jar)
     prompter = ScriptedPrompter(select=["1.2.0-SNAPSHOT"])
 
-    code = run_pin(tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin", "good"], prompter=prompter)
+    code = run_pin(
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN),
+        argv=["pin", "good", "--interactive"],
+        prompter=prompter,
+    )
 
     assert code == 0
     assert 'version = "1.2.0-SNAPSHOT"' in (tmp_path / "server.toml").read_text()
@@ -218,7 +224,9 @@ def test_pin_plugin_spiget_downgrade_pins_no_asset(tmp_path: Path) -> None:
     )
     prompter = ScriptedPrompter(select=["5.5.0"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "luckperms"], prompter=prompter)
+    code = run_pin(
+        tmp_path, api, text, argv=["pin", "luckperms", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -242,7 +250,9 @@ def test_pin_plugin_spiget_incompatible_declared_versions_fail(tmp_path: Path, c
     )
     prompter = ScriptedPrompter(select=["5.5.71"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "luckperms"], prompter=prompter)
+    code = run_pin(
+        tmp_path, api, text, argv=["pin", "luckperms", "--interactive"], prompter=prompter
+    )
 
     assert code == 1
     assert "declared tested versions do not include Minecraft 26.1.2" in capsys.readouterr().err
@@ -287,7 +297,9 @@ def test_pin_plugin_modrinth_multi_jar_selects_the_file(tmp_path: Path) -> None:
     )
     prompter = ScriptedPrompter(select=["24.1", "CoreProtect-CE-24.1-b.jar"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "coreprotect"], prompter=prompter)
+    code = run_pin(
+        tmp_path, api, text, argv=["pin", "coreprotect", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -336,7 +348,7 @@ def test_pin_plugin_github_release(tmp_path: Path) -> None:
     )
     prompter = ScriptedPrompter(select=["1.7.2"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "vault"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "vault", "--interactive"], prompter=prompter)
 
     assert code == 0
     assert 'version = "1.7.2"' in (tmp_path / "server.toml").read_text()
@@ -387,7 +399,9 @@ def test_pin_plugin_hangar_external_release(tmp_path: Path) -> None:
     )
     prompter = ScriptedPrompter(select=["2.22.0"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "essentialsx"], prompter=prompter)
+    code = run_pin(
+        tmp_path, api, text, argv=["pin", "essentialsx", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     config_text = (tmp_path / "server.toml").read_text()
@@ -421,7 +435,7 @@ def test_pin_rolls_back_failed_download(tmp_path: Path, capsys) -> None:
     text = base_config(GOOD_PLUGIN)
     prompter = ScriptedPrompter(select=["1.1.0"])
 
-    code = run_pin(tmp_path, api, text, argv=["pin", "good"], prompter=prompter)
+    code = run_pin(tmp_path, api, text, argv=["pin", "good", "--interactive"], prompter=prompter)
 
     assert code == 1
     assert 'version = "1.0.0"' in (tmp_path / "server.toml").read_text()
@@ -439,12 +453,98 @@ def test_pin_bare_target_asks_what_to_pin(tmp_path: Path) -> None:
     add_good_download_routes(api, "1.1.0", jar)
     prompter = ScriptedPrompter(select=["good", "1.1.0"])
 
-    code = run_pin(tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin"], prompter=prompter)
+    code = run_pin(
+        tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin", "--interactive"], prompter=prompter
+    )
 
     assert code == 0
     first_kind, first_message = prompter.calls[0]
     assert (first_kind, first_message) == ("select", "What to pin")
     assert prompter.choices["What to pin"] == ["core", "good"]
+
+
+def test_pin_core_non_interactive_with_version_and_build(tmp_path: Path) -> None:
+    api = FakeAPI()
+    api.add_json(FILL_PROJECTS_URL, fill_project_payload({"26.1": ["26.1.2"]}))
+    jar = make_paper_jar_bytes(main_class="io.papermc.paper.NewMain")
+    add_fill_builds(api, "26.1.2", [(57, jar)])
+
+    code = run_pin(
+        tmp_path,
+        api,
+        base_config("", paper_version="26.1.1"),
+        argv=["pin", "core", "--version", "26.1.2", "--build", "57"],
+    )
+
+    assert code == 0
+    config_text = (tmp_path / "server.toml").read_text()
+    assert 'version = "26.1.2"' in config_text
+    assert "build = 57" in config_text
+    assert (tmp_path / "artifacts" / "paper.jar").read_bytes() == jar
+
+
+def test_pin_plugin_non_interactive_with_version(tmp_path: Path) -> None:
+    api = FakeAPI()
+    add_paper_routes(api)
+    jar = make_plugin_jar_bytes(name="Good11")
+    add_good_download_routes(api, "1.1.0", jar)
+
+    code = run_pin(
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN),
+        argv=["pin", "good", "--version", "1.1.0"],
+    )
+
+    assert code == 0
+    assert 'version = "1.1.0"' in (tmp_path / "server.toml").read_text()
+    assert (tmp_path / "artifacts" / "plugins" / "good.jar").read_bytes() == jar
+
+
+def test_pin_non_interactive_requires_target_and_version(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    text = base_config(GOOD_PLUGIN)
+
+    assert run_pin(tmp_path, api, text, argv=["pin"]) == 1
+    assert "needs a target" in capsys.readouterr().err
+    assert run_pin(tmp_path, api, text, argv=["pin", "good"]) == 1
+    assert "needs --version" in capsys.readouterr().err
+    assert api.requests == []
+
+
+def test_pin_interactive_rejects_exact_value_flags(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+
+    code = run_pin(
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN),
+        argv=["pin", "good", "--interactive", "--version", "1.1.0"],
+        prompter=ScriptedPrompter(),
+    )
+
+    assert code == 1
+    assert "cannot combine --interactive" in capsys.readouterr().err
+    assert api.requests == []
+
+
+def test_pin_non_interactive_rejects_cross_target_flags(tmp_path: Path, capsys) -> None:
+    api = FakeAPI()
+    text = base_config(GOOD_PLUGIN)
+
+    assert (
+        run_pin(
+            tmp_path, api, text, argv=["pin", "core", "--version", "26.1.2", "--asset", "x.jar"]
+        )
+        == 1
+    )
+    assert "--asset only applies to plugins" in capsys.readouterr().err
+    assert (
+        run_pin(tmp_path, api, text, argv=["pin", "good", "--version", "1.1.0", "--build", "2"])
+        == 1
+    )
+    assert "--build only applies to core" in capsys.readouterr().err
+    assert api.requests == []
 
 
 def test_pin_unknown_target_id(tmp_path: Path, capsys) -> None:
@@ -460,7 +560,7 @@ def test_pin_unknown_target_id(tmp_path: Path, capsys) -> None:
 def test_pin_non_tty_refused(tmp_path: Path, capsys) -> None:
     api = FakeAPI()
 
-    code = run_pin(tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin", "good"])
+    code = run_pin(tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin", "good", "--interactive"])
 
     assert code == 1
     assert "interactive" in capsys.readouterr().err
@@ -475,7 +575,13 @@ def test_pin_plugin_no_compatible_versions(tmp_path: Path, capsys) -> None:
     )
     prompter = ScriptedPrompter()
 
-    code = run_pin(tmp_path, api, base_config(GOOD_PLUGIN), argv=["pin", "good"], prompter=prompter)
+    code = run_pin(
+        tmp_path,
+        api,
+        base_config(GOOD_PLUGIN),
+        argv=["pin", "good", "--interactive"],
+        prompter=prompter,
+    )
 
     assert code == 1
     assert "no version for Minecraft 26.1.2" in capsys.readouterr().err

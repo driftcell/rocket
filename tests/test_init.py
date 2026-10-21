@@ -134,6 +134,7 @@ def test_init_wizard_writes_expected_config(tmp_path: Path, capsys) -> None:
         path,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=prompter,
         catalog=SMALL_CATALOG,
     )
@@ -186,6 +187,41 @@ asset = "Vault.jar"
     assert f"wrote {path}" in out
 
 
+def test_init_non_interactive_uses_the_newest_release_and_all_plugins(
+    tmp_path: Path, capsys
+) -> None:
+    api = FakeAPI()
+    add_small_catalog_routes(api)
+    path = tmp_path / "server.toml"
+
+    code = run_init(
+        path,
+        transport=api.transport(),
+        sleep=lambda _: None,
+        catalog=SMALL_CATALOG,
+    )
+
+    assert code == 0
+    config = load_config(path)
+    assert config.paper.version == "1.21.11"
+    assert [plugin.id for plugin in config.plugins] == ["viaversion", "coreprotect", "vault"]
+    assert "wrote" in capsys.readouterr().out
+
+
+def test_init_non_interactive_fails_when_paper_versions_are_unavailable(
+    tmp_path: Path, capsys
+) -> None:
+    api = FakeAPI()
+    api.add_json(FILL_PROJECTS_URL, {"message": "unavailable"}, status=503)
+    path = tmp_path / "server.toml"
+
+    code = run_init(path, transport=api.transport(), sleep=lambda _: None, catalog=())
+
+    assert code == 1
+    assert "cannot list Paper versions" in capsys.readouterr().err
+    assert not path.exists()
+
+
 def test_init_reports_skipped_plugins_and_still_writes(tmp_path: Path, capsys) -> None:
     api = FakeAPI()
     api.add_json(
@@ -235,6 +271,7 @@ def test_init_reports_skipped_plugins_and_still_writes(tmp_path: Path, capsys) -
         path,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=prompter,
         catalog=SMALL_CATALOG[:2],
     )
@@ -257,6 +294,7 @@ def test_init_refuses_to_overwrite_without_force(tmp_path: Path, capsys) -> None
         path,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=prompter,
         catalog=(),
     )
@@ -281,6 +319,7 @@ def test_init_force_overwrites_existing_file(tmp_path: Path) -> None:
         force=True,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=ScriptedPrompter(select=["paper", "1.21.11"]),
         catalog=(),
     )
@@ -300,6 +339,7 @@ def test_init_falls_back_to_manual_paper_version(tmp_path: Path, capsys) -> None
         path,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=ScriptedPrompter(select=["paper"], text="1.21.10"),
         catalog=(),
     )
@@ -318,6 +358,7 @@ def test_init_abort_writes_nothing(tmp_path: Path, capsys) -> None:
         path,
         transport=api.transport(),
         sleep=lambda _: None,
+        interactive=True,
         prompter=ScriptedPrompter(abort_on="select"),
         catalog=(),
     )
@@ -332,7 +373,7 @@ def test_init_requires_a_terminal_without_injected_prompter(
 ) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO())
 
-    code = run_init(tmp_path / "server.toml")
+    code = run_init(tmp_path / "server.toml", interactive=True)
 
     assert code == 1
     assert "interactive" in capsys.readouterr().err
@@ -345,7 +386,7 @@ def test_cli_init_command(tmp_path: Path) -> None:
     path = tmp_path / "server.toml"
 
     code = main(
-        ["init", "--config", str(path)],
+        ["init", "-i", "--config", str(path)],
         transport=api.transport(),
         sleep=lambda _: None,
         prompter=ScriptedPrompter(select=["paper", "1.21.11"], confirm=False),

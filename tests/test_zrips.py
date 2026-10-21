@@ -257,7 +257,7 @@ def test_zrips_pin_downgrade_pins_no_asset(tmp_path: Path) -> None:
     prompter = ScriptedPrompter(select=["2.9.0"])
 
     code = main(
-        ["pin", "demoplugin", "--config", str(config_path)],
+        ["pin", "demoplugin", "--interactive", "--config", str(config_path)],
         transport=api.transport(),
         sleep=lambda _: None,
         prompter=prompter,
